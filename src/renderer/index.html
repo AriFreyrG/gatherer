@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gatherer</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">Gatherer</div>
+    <button id="new-btn" class="primary">+ New note</button>
+    <input id="filter" type="search" placeholder="Filter notes…" autocomplete="off">
+    <ul id="list"></ul>
+    <div id="list-empty" class="muted" hidden>No notes yet.</div>
+  </aside>
+
+  <main id="main">
+    <div id="empty-state" hidden>
+      <h2>Gather your first page</h2>
+      <p class="muted">Paste a URL and Gatherer saves a readable, editable copy.</p>
+      <button id="empty-new" class="primary">+ New note</button>
+    </div>
+
+    <div id="note-view" hidden>
+      <div id="toolbar" role="toolbar">
+        <select id="block-select" title="Block style">
+          <option value="p">Paragraph</option>
+          <option value="h1">Heading 1</option>
+          <option value="h2">Heading 2</option>
+          <option value="h3">Heading 3</option>
+        </select>
+        <span class="sep"></span>
+        <button data-cmd="bold" title="Bold (Cmd/Ctrl+B)"><b>B</b></button>
+        <button data-cmd="italic" title="Italic (Cmd/Ctrl+I)"><i>I</i></button>
+        <button data-cmd="underline" title="Underline (Cmd/Ctrl+U)"><u>U</u></button>
+        <button data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+        <span class="sep"></span>
+        <button data-cmd="insertUnorderedList" title="Bullet list">&#8226;&#8801;</button>
+        <button data-cmd="insertOrderedList" title="Numbered list">1.&#8801;</button>
+        <button data-act="blockquote" title="Blockquote">&#10077;</button>
+        <button data-act="code" title="Code block">&lt;/&gt;</button>
+        <span class="sep"></span>
+        <button id="link-btn" data-act="link" title="Add link">&#128279;</button>
+        <button data-cmd="unlink" title="Remove link">&#9099;</button>
+        <button data-cmd="removeFormat" title="Clear formatting">T<sub>x</sub></button>
+        <span class="sep"></span>
+        <button data-cmd="undo" title="Undo">&#8630;</button>
+        <button data-cmd="redo" title="Redo">&#8631;</button>
+        <span class="spacer"></span>
+        <span id="save-status" class="muted"></span>
+        <span id="delete-wrap">
+          <button id="delete-btn" class="danger" title="Delete note">Delete</button>
+          <span id="delete-confirm" hidden>
+            Delete this note?
+            <button id="delete-yes" class="danger">Delete</button>
+            <button id="delete-no">Cancel</button>
+          </span>
+        </span>
+        <form id="link-pop" hidden>
+          <input id="link-input" type="text" placeholder="https://…" autocomplete="off">
+          <button class="primary" type="submit">Apply</button>
+          <button type="button" id="link-cancel">Cancel</button>
+        </form>
+      </div>
+
+      <div id="scroller">
+        <article>
+          <div id="title" contenteditable="plaintext-only" spellcheck="false" data-placeholder="Untitled"></div>
+          <div id="meta" class="muted">
+            <span>Gathered: <span id="meta-date"></span></span>
+            <span>Source: <a id="meta-url" href="#"></a></span>
+          </div>
+          <div id="editor" contenteditable="true" spellcheck="true"></div>
+        </article>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="modal" class="backdrop" hidden>
+  <form id="modal-form" class="dialog">
+    <h3>Gather a page</h3>
+    <input id="url-input" type="text" placeholder="https://example.com/article" autocomplete="off">
+    <div id="modal-error" class="error" hidden></div>
+    <div id="modal-busy" class="muted" hidden><span class="spinner"></span> Gathering…</div>
+    <div class="actions">
+      <button type="button" id="modal-cancel">Cancel</button>
+      <button type="submit" id="modal-go" class="primary">Gather</button>
+    </div>
+  </form>
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>
