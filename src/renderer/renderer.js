@@ -10,6 +10,8 @@
     err: $('modal-error'), busy: $('modal-busy'), go: $('modal-go'), cancel: $('modal-cancel'),
     linkPop: $('link-pop'), linkInput: $('link-input'),
     delBtn: $('delete-btn'), delConfirm: $('delete-confirm'),
+    organize: $('organize'), chip: $('subject-chip'), subjForm: $('subject-form'),
+    subjInput: $('subject-input'), subjOptions: $('subject-options'),
   };
 
   let notes = [];
@@ -22,24 +24,118 @@
   const fmtDate = (iso, opts) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString(undefined, opts); };
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u || ''; } };
 
+  /* ---------- organizing ---------- */
+  // Small per-device preferences: which grouping is active and which groups are collapsed.
+  const prefs = (() => {
+    let p = {};
+    try { p = JSON.parse(localStorage.getItem('gatherer:organize') || '{}') || {}; } catch {}
+    if (!['subject', 'source', 'date'].includes(p.mode)) p.mode = 'subject';
+    if (!p.collapsed || typeof p.collapsed !== 'object') p.collapsed = {};
+    return p;
+  })();
+  const savePrefs = () => { try { localStorage.setItem('gatherer:organize', JSON.stringify(prefs)); } catch {} };
+  const OTHER = 'Other';
+
+  function dateBucket(iso, now) {
+    const d = new Date(iso);
+    if (isNaN(d)) return { key: 'z', label: 'Undated' };
+    const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diff = Math.round((day(now) - day(d)) / 86400000);
+    if (diff <= 0) return { key: '0', label: 'Today' };
+    if (diff === 1) return { key: '1', label: 'Yesterday' };
+    if (diff < 7) return { key: '2', label: 'Previous 7 days' };
+    if (diff < 30) return { key: '3', label: 'Previous 30 days' };
+    const label = d.toLocaleDateString(undefined, { month: 'long', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+    return { key: `4-${9999 - d.getFullYear()}-${String(99 - d.getMonth()).padStart(2, '0')}`, label };
+  }
+
+  // -> [{ key, label, notes }] in display order. `notes` is already newest first.
+  function groupNotes(list, mode) {
+    const groups = new Map();
+    const add = (key, label, n) => {
+      let g = groups.get(key); if (!g) groups.set(key, (g = { key, label, notes: [] }));
+      g.notes.push(n);
+    };
+    const now = new Date();
+    if (mode === 'date') {
+      for (const n of list) { const b = dateBucket(n.dateGathered, now); add(b.key, b.label, n); }
+      return [...groups.values()].sort((a, b) => a.key.localeCompare(b.key));
+    }
+    if (mode === 'source') {
+      // Prefer the site's own name ("The Verge") over its host when the page declared one.
+      const names = new Map();
+      for (const n of list) {
+        const h = host(n.url) || '';
+        if (n.siteName) { const m = names.get(h) || new Map(); m.set(n.siteName, (m.get(n.siteName) || 0) + 1); names.set(h, m); }
+      }
+      for (const n of list) {
+        const h = host(n.url);
+        const m = names.get(h);
+        const label = h ? (m ? [...m].sort((a, b) => b[1] - a[1])[0][0] : h) : 'No source';
+        add(h || '~', label, n);
+      }
+    } else {
+      for (const n of list) { const s = n.subject || OTHER; add(s.toLowerCase(), s, n); }
+    }
+    const last = (g) => (g.label === OTHER || g.key === '~' ? 1 : 0);
+    return [...groups.values()].sort((a, b) => last(a) - last(b) || b.notes.length - a.notes.length || a.label.localeCompare(b.label));
+  }
+
+  const collapsedKey = (g) => `${prefs.mode}:${g.key}`;
+
+  function setMode(mode) {
+    prefs.mode = mode; savePrefs();
+    el.organize.querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
+    renderList();
+    const sel = el.list.querySelector('li.note.selected');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+  el.organize.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setMode(b.dataset.mode); });
+
   /* ---------- list ---------- */
+  function noteItem(n) {
+    const li = document.createElement('li');
+    li.className = 'note'; li.dataset.id = n.id;
+    if (current && current.id === n.id) li.classList.add('selected');
+    if (prefs.mode === 'subject') li.draggable = true;
+    const t = document.createElement('div'); t.className = 't'; t.textContent = n.title || 'Untitled';
+    const s = document.createElement('div'); s.className = 's';
+    const a = document.createElement('span');
+    const b = document.createElement('span');
+    // Show whatever the grouping doesn't already say.
+    if (prefs.mode === 'source') { a.textContent = n.subject && n.subject !== OTHER ? n.subject : ''; }
+    else a.textContent = n.siteName || host(n.url);
+    b.textContent = prefs.mode === 'date' ? fmtDate(n.dateGathered, { timeStyle: 'short' }) : fmtDate(n.dateGathered, { dateStyle: 'short' });
+    if (prefs.mode === 'date' && !/^[0-1]$/.test(dateBucket(n.dateGathered, new Date()).key)) b.textContent = fmtDate(n.dateGathered, { month: 'short', day: 'numeric' });
+    s.append(a, b); li.append(t, s);
+    return li;
+  }
+
   function renderList() {
     const q = el.filter.value.trim().toLowerCase();
-    const shown = notes.filter((n) => !q || (n.title || '').toLowerCase().includes(q) || (n.url || '').toLowerCase().includes(q));
+    const match = (n) => !q || [n.title, n.url, n.siteName, n.subject].some((v) => (v || '').toLowerCase().includes(q));
+    const shown = notes.filter(match);
+    const scroll = el.list.scrollTop;
     el.list.textContent = '';
-    for (const n of shown) {
+    for (const g of groupNotes(shown, prefs.mode)) {
+      const open = !!q || !prefs.collapsed[collapsedKey(g)];
       const li = document.createElement('li');
-      li.dataset.id = n.id;
-      if (current && current.id === n.id) li.className = 'selected';
-      const t = document.createElement('div'); t.className = 't'; t.textContent = n.title || 'Untitled';
-      const s = document.createElement('div'); s.className = 's';
-      const a = document.createElement('span'); a.textContent = host(n.url);
-      const b = document.createElement('span'); b.textContent = fmtDate(n.dateGathered, { dateStyle: 'short' });
-      s.append(a, b); li.append(t, s);
+      li.className = 'group' + (open ? ' open' : '');
+      li.dataset.key = g.key; li.dataset.label = g.label;
+      const btn = document.createElement('button');
+      btn.className = 'gh'; btn.type = 'button'; btn.setAttribute('aria-expanded', String(open));
+      btn.innerHTML = '<span class="chev">&#9654;</span><span class="name"></span><span class="n"></span>';
+      btn.querySelector('.name').textContent = g.label;
+      btn.querySelector('.n').textContent = g.notes.length;
+      btn.title = g.label;
+      li.appendChild(btn);
       el.list.appendChild(li);
+      if (open) for (const n of g.notes) el.list.appendChild(noteItem(n));
     }
+    el.list.scrollTop = scroll;
     el.listEmpty.hidden = shown.length > 0;
     el.listEmpty.textContent = notes.length ? 'No matching notes.' : 'No notes yet.';
+    renderSubjectChip();
   }
 
   async function refreshList() { notes = await api.notes.list(); renderList(); }
@@ -78,10 +174,63 @@
     el.date.textContent = fmtDate(note.dateGathered);
     el.url.textContent = note.url || ''; el.url.dataset.url = note.url || '';
     el.url.title = note.url || '';
-    setStatus(''); cancelDelete(); hideLink();
+    setStatus(''); cancelDelete(); hideLink(); hideSubjectEdit();
+    revealCurrent();
     document.getElementById('scroller').scrollTop = 0;
     renderList();
   }
+
+  // Expand the group that holds the open note so the selection is never hidden.
+  function revealCurrent() {
+    if (!current) return;
+    const n = notes.find((x) => x.id === current.id);
+    if (!n) return;
+    const g = groupNotes([n], prefs.mode)[0];
+    if (g && prefs.collapsed[collapsedKey(g)]) { delete prefs.collapsed[collapsedKey(g)]; savePrefs(); }
+  }
+
+  /* ---------- subject chip ---------- */
+  function renderSubjectChip() {
+    if (!current) return;
+    const n = notes.find((x) => x.id === current.id);
+    const subject = (n && n.subject) || OTHER;
+    const pinned = !!(n && n.pinnedSubject);
+    el.chip.textContent = subject;
+    if (!pinned) { const s = document.createElement('span'); s.className = 'auto'; s.textContent = 'auto'; el.chip.appendChild(s); }
+    el.chip.title = pinned ? 'You chose this subject. Click to change, or clear it to let Gatherer decide.' : 'Gatherer picked this subject automatically. Click to choose your own.';
+  }
+  function showSubjectEdit() {
+    const n = notes.find((x) => x.id === current.id);
+    el.subjOptions.textContent = '';
+    for (const s of [...new Set(notes.map((x) => x.subject).filter((s) => s && s !== OTHER))].sort()) {
+      const o = document.createElement('option'); o.value = s; el.subjOptions.appendChild(o);
+    }
+    el.subjInput.value = (n && n.pinnedSubject) || '';
+    el.subjInput.placeholder = n && !n.pinnedSubject && n.subject !== OTHER ? `Automatic (${n.subject})` : 'Automatic';
+    el.chip.hidden = true; el.subjForm.hidden = false; el.subjInput.focus(); el.subjInput.select();
+  }
+  function hideSubjectEdit() { el.subjForm.hidden = true; el.chip.hidden = false; }
+  async function setSubject(id, subject) {
+    try {
+      await flush();
+      await api.notes.setSubject(id, subject);
+      await refreshList();
+    } catch (e) { setStatus(String(e.message || e)); }
+  }
+  let subjCommitting = false;
+  async function commitSubject() {
+    if (subjCommitting || el.subjForm.hidden || !current) return;
+    subjCommitting = true;
+    const val = el.subjInput.value.trim();
+    const n = notes.find((x) => x.id === current.id);
+    hideSubjectEdit();
+    if (n && val !== (n.pinnedSubject || '')) { await setSubject(current.id, val === OTHER ? '' : val); revealCurrent(); renderList(); }
+    subjCommitting = false;
+  }
+  el.chip.addEventListener('click', showSubjectEdit);
+  el.subjForm.addEventListener('submit', (e) => { e.preventDefault(); commitSubject(); });
+  el.subjInput.addEventListener('blur', commitSubject);
+  el.subjInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); hideSubjectEdit(); } });
 
   function showEmpty() {
     current = null; el.view.hidden = true; el.empty.hidden = false; renderList();
@@ -193,8 +342,63 @@
 
   /* ---------- list interactions ---------- */
   el.list.addEventListener('click', (e) => {
-    const li = e.target.closest('li');
+    const gh = e.target.closest('.gh');
+    if (gh) {
+      const k = `${prefs.mode}:${gh.parentElement.dataset.key}`;
+      if (gh.parentElement.classList.contains('open')) prefs.collapsed[k] = true; else delete prefs.collapsed[k];
+      savePrefs(); renderList(); return;
+    }
+    const li = e.target.closest('li.note');
     if (li && !(current && current.id === li.dataset.id)) openNote(li.dataset.id);
+  });
+
+  // Up/Down moves between visible notes, wherever focus is in the sidebar (except the filter box).
+  document.getElementById('sidebar').addEventListener('keydown', (e) => {
+    if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || e.target === el.filter) return;
+    const items = [...el.list.querySelectorAll('li.note')];
+    if (!items.length) return;
+    e.preventDefault();
+    const i = items.findIndex((x) => x.classList.contains('selected'));
+    const next = items[Math.max(0, Math.min(items.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    if (next && next.dataset.id !== (current && current.id)) { openNote(next.dataset.id).then(() => { const s = el.list.querySelector('li.note.selected'); if (s) s.scrollIntoView({ block: 'nearest' }); }); }
+  });
+
+  // In Subject view, drag a note onto another subject's header to move it there.
+  let dragId = null;
+  el.list.addEventListener('dragstart', (e) => {
+    const li = e.target.closest('li.note');
+    if (!li || prefs.mode !== 'subject') return;
+    dragId = li.dataset.id; li.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId);
+  });
+  el.list.addEventListener('dragend', () => {
+    dragId = null;
+    el.list.querySelectorAll('.dragging,.drop').forEach((x) => x.classList.remove('dragging', 'drop'));
+  });
+  const dropTarget = (e) => {
+    if (!dragId) return null;
+    const li = e.target.closest('li');
+    if (!li) return null;
+    if (li.classList.contains('group')) return li;
+    // Dropping onto any note inside a group counts as dropping onto that group.
+    let p = li.previousElementSibling;
+    while (p && !p.classList.contains('group')) p = p.previousElementSibling;
+    return p;
+  };
+  el.list.addEventListener('dragover', (e) => {
+    const g = dropTarget(e);
+    el.list.querySelectorAll('.drop').forEach((x) => x !== g && x.classList.remove('drop'));
+    if (!g) return;
+    e.preventDefault(); g.classList.add('drop');
+  });
+  el.list.addEventListener('drop', async (e) => {
+    const g = dropTarget(e);
+    if (!g) return;
+    e.preventDefault();
+    const id = dragId; dragId = null;
+    const n = notes.find((x) => x.id === id);
+    if (!n || (n.subject || OTHER) === g.dataset.label) { renderList(); return; }
+    await setSubject(id, g.dataset.label === OTHER ? '' : g.dataset.label);
   });
   el.filter.addEventListener('input', renderList);
 
@@ -237,6 +441,7 @@
   window.addEventListener('blur', () => { if (dirty) flush(); });
 
   (async () => {
+    setMode(prefs.mode);
     try { await refreshList(); } catch (e) { el.listEmpty.textContent = String(e.message || e); el.listEmpty.hidden = false; }
     if (notes.length) openNote(notes[0].id); else showEmpty();
   })();

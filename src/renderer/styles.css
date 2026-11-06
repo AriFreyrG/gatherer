@@ -31,10 +31,25 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 #sidebar { width: 260px; flex: none; background: var(--bg-side); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 14px 12px; gap: 10px; min-height: 0; }
 .brand { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
 #new-btn { padding: 8px; }
-#list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
-#list li { padding: 8px 10px; border-radius: 8px; cursor: pointer; }
-#list li:hover { background: var(--bg-hover); }
-#list li.selected { background: var(--bg-sel); }
+#organize { display: flex; background: var(--bg-hover); border-radius: 8px; padding: 2px; gap: 2px; }
+#organize button { flex: 1; padding: 4px 0; font-size: 12px; font-weight: 500; color: var(--muted); border-radius: 6px; }
+#organize button:hover { background: transparent; color: var(--fg); }
+#organize button[aria-checked="true"] { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+
+#list { list-style: none; margin: 0 -4px; padding: 0 4px; overflow-y: auto; flex: 1; }
+#list li.note { padding: 7px 10px 7px 24px; border-radius: 8px; cursor: pointer; }
+#list li.note:hover { background: var(--bg-hover); }
+#list li.note.selected { background: var(--bg-sel); }
+#list li.note.dragging { opacity: .45; }
+#list li.group { position: sticky; top: 0; z-index: 1; background: var(--bg-side); padding-top: 6px; }
+#list li.group:first-child { padding-top: 0; }
+#list .gh { width: 100%; display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); }
+#list .gh:hover { color: var(--fg); }
+#list .gh .chev { width: 12px; flex: none; transition: transform .12s; display: inline-block; font-size: 10px; }
+#list li.group.open .chev { transform: rotate(90deg); }
+#list .gh .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; letter-spacing: .04em; }
+#list .gh .n { font-weight: 500; font-variant-numeric: tabular-nums; }
+#list li.group.drop .gh { background: var(--bg-sel); outline: 1px dashed var(--accent); color: var(--fg); }
 #list .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #list .s { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
 #list .s span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -59,6 +74,10 @@ article { max-width: 720px; margin: 0 auto; }
 #meta { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 13px; padding-bottom: 16px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
 #meta a { color: var(--accent); text-decoration: none; word-break: break-all; }
 #meta a:hover { text-decoration: underline; }
+#subject-chip { padding: 1px 8px; min-width: 0; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; vertical-align: 1px; }
+#subject-chip .auto { color: var(--muted); font-size: 11px; margin-left: 4px; }
+#subject-form { display: inline; }
+#subject-input { padding: 1px 8px; font-size: 12px; border-radius: 999px; width: 180px; }
 
 #editor { outline: none; font: 17px/1.7 Georgia, "Iowan Old Style", "Times New Roman", serif; overflow-wrap: anywhere; min-height: 40vh; }
 #editor h1, #editor h2, #editor h3, #editor h4 { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.25; margin: 1.6em 0 .5em; }

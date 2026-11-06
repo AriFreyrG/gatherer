@@ -13,6 +13,11 @@
     <div class="brand">Gatherer</div>
     <button id="new-btn" class="primary">+ New note</button>
     <input id="filter" type="search" placeholder="Filter notes…" autocomplete="off">
+    <div id="organize" role="radiogroup" aria-label="Organize notes by">
+      <button role="radio" data-mode="subject" title="Group notes by what they are about">Subject</button>
+      <button role="radio" data-mode="source" title="Group notes by the site they came from">Source</button>
+      <button role="radio" data-mode="date" title="Group notes by when you gathered them">Date</button>
+    </div>
     <ul id="list"></ul>
     <div id="list-empty" class="muted" hidden>No notes yet.</div>
   </aside>
@@ -72,6 +77,13 @@
           <div id="meta" class="muted">
             <span>Gathered: <span id="meta-date"></span></span>
             <span>Source: <a id="meta-url" href="#"></a></span>
+            <span>Subject:
+              <button id="subject-chip" type="button" title="Change subject"></button>
+              <form id="subject-form" hidden>
+                <input id="subject-input" type="text" list="subject-options" placeholder="Automatic" autocomplete="off" spellcheck="false">
+                <datalist id="subject-options"></datalist>
+              </form>
+            </span>
           </div>
           <div id="editor" contenteditable="true" spellcheck="true"></div>
         </article>

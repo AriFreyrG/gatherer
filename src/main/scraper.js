@@ -127,6 +127,30 @@ function clean(root, base) {
 
 const meta = (doc, sel) => (doc.querySelector(sel)?.getAttribute('content') || '').trim();
 
+// Topic hints the page declares about itself: section, tags, keywords (meta and JSON-LD).
+function pageTags(doc) {
+  const out = [];
+  const push = (v) => { for (const t of String(v || '').split(/[,;|]/)) { const s = t.trim(); if (s && s.length <= 40) out.push(s); } };
+  doc.querySelectorAll('meta[property="article:section"],meta[property="article:tag"],meta[name="news_keywords"],meta[name="keywords"],meta[name="parsely-section"]')
+    .forEach((m) => push(m.getAttribute('content')));
+  for (const s of doc.querySelectorAll('script[type="application/ld+json"]')) {
+    try {
+      const walk = (o) => {
+        if (!o || typeof o !== 'object') return;
+        if (Array.isArray(o)) return o.forEach(walk);
+        for (const k of ['articleSection', 'keywords', 'genre']) {
+          const v = o[k];
+          if (Array.isArray(v)) v.forEach(push); else if (typeof v === 'string') push(v);
+        }
+        if (o['@graph']) walk(o['@graph']);
+      };
+      walk(JSON.parse(s.textContent));
+    } catch { /* ignore malformed JSON-LD */ }
+  }
+  const seen = new Set();
+  return out.filter((t) => { const k = t.toLowerCase(); if (seen.has(k) || /^(news|home|article|index|blog|post)$/i.test(t)) return false; seen.add(k); return true; }).slice(0, 12);
+}
+
 function extract(html, finalUrl) {
   const dom = new JSDOM(html, { url: finalUrl }); // scripts not executed by default
   const doc = dom.window.document;
@@ -156,7 +180,8 @@ function extract(html, finalUrl) {
     content = sanitize(`<p><img src="${ogImage.replace(/"/g, '&quot;')}" alt=""></p>`) + content;
   }
   const title = (article && article.title || '').trim() || ogTitle || docTitle || host;
-  return { title, content, url: finalUrl };
+  const siteName = (article && article.siteName || '').trim() || meta(doc, 'meta[property="og:site_name"]') || meta(doc, 'meta[name="application-name"]');
+  return { title, content, url: finalUrl, siteName, tags: pageTags(doc) };
 }
 
 async function scrape(input) {

@@ -32,10 +32,11 @@ app.whenReady().then(() => {
   handle('notes:get', (id) => storage.get(id));
   handle('notes:create', async (url) => {
     const normalized = normalizeUrl(url);
-    const { title, content } = await scrape(normalized);
-    return storage.create({ title, url: normalized, dateGathered: new Date().toISOString(), content });
+    const { title, content, siteName, tags } = await scrape(normalized);
+    return storage.create({ title, url: normalized, dateGathered: new Date().toISOString(), content, siteName, tags });
   });
   handle('notes:save', (id, data) => storage.save(id, data));
+  handle('notes:setSubject', (id, subject) => storage.setSubject(id, subject));
   handle('notes:delete', (id) => storage.remove(id));
   handle('app:openExternal', async (url) => {
     if (!isHttp(url)) throw new Error('Only http and https links can be opened');
