@@ -438,6 +438,7 @@
 
   /* ---------- lifecycle ---------- */
   window.addEventListener('beforeunload', () => { flush(); });
+  api.onFlushRequest(() => flush());
   window.addEventListener('blur', () => { if (dirty) flush(); });
 
   (async () => {

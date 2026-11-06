@@ -24,4 +24,8 @@ contextBridge.exposeInMainWorld('gatherer', {
     delete: (id) => ipcRenderer.invoke('notes:delete', id),
   },
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  // Main asks the renderer to save pending edits before the window closes.
+  onFlushRequest: (fn) => ipcRenderer.on('app:flush', async () => {
+    try { await fn(); } catch { /* close anyway */ } finally { ipcRenderer.send('app:flushed'); }
+  }),
 });

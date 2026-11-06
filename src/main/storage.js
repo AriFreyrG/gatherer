@@ -16,6 +16,10 @@ function getDir() {
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const unesc = (s) => s.replace(/&(#39|quot|lt|gt|amp);/g, (_, e) => ({ '#39': "'", quot: '"', lt: '<', gt: '>', amp: '&' }[e]));
 
+// Downloaded images for a note live in <notes>/assets/<id>/.
+const assetsRoot = () => path.join(getDir(), 'assets');
+function assetDir(id) { fileFor(id); return path.join(assetsRoot(), id); }
+
 function fileFor(id) {
   if (typeof id !== 'string' || !/^[\w-]+$/.test(id)) throw new Error('Invalid note id');
   return path.join(getDir(), id + '.html');
@@ -123,7 +127,8 @@ function setSubject(id, subject) {
 
 function remove(id) {
   try { fs.unlinkSync(fileFor(id)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  fs.rmSync(assetDir(id), { recursive: true, force: true });
   return true;
 }
 
-module.exports = { setDir, list, get, create, save, setSubject, remove };
+module.exports = { setDir, list, get, create, save, setSubject, remove, assetsRoot, assetDir };

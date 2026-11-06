@@ -26,7 +26,7 @@ function sanitize(html) {
   return DOMPurify.sanitize(String(html || ''), {
     ALLOWED_TAGS: TAGS,
     ALLOWED_ATTR: ATTRS, ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false,
-    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:)/i,
+    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|gatherer-asset:)/i,
   }).trim();
 }
 
