@@ -12,7 +12,16 @@
     delBtn: $('delete-btn'), delConfirm: $('delete-confirm'),
     organize: $('organize'), chip: $('subject-chip'), subjForm: $('subject-form'),
     subjInput: $('subject-input'), subjOptions: $('subject-options'),
-    scroller: $('scroller'), archBtn: $('archive-btn'), archSize: $('archive-size'),
+    tagList: $('tag-list'), tagInput: $('tag-input'), tagOptions: $('tag-options'),
+    hlWrap: $('hl-wrap'), hlCount: $('hl-count'), hlPanel: $('hl-panel'),
+    bubble: $('hl-bubble'), bubbleBtn: $('hl-bubble-btn'), hlBtn: $('hl-btn'),
+    summary: $('summary'), sumText: $('summary-text'), sumBadge: $('summary-badge'),
+    sumBtn: $('summary-btn'), sumStatus: $('summary-status'),
+    regroup: $('regroup-btn'), regroupStatus: $('regroup-status'),
+    settings: $('settings'), setForm: $('settings-form'), keyInput: $('key-input'),
+    keyCurrent: $('key-current'), keyRemove: $('key-remove'), autoSum: $('auto-summarize'), setMsg: $('settings-msg'),
+    searchCount: $('search-count'), scroller: $('scroller'),
+    archBtn: $('archive-btn'), archSize: $('archive-size'),
     archView: $('archive-view'), archFrame: $('archive-frame'), archLabel: $('archive-label'), archClose: $('archive-close'),
   };
 
@@ -22,6 +31,159 @@
   let timer = null;
   let saving = Promise.resolve();
   let savedRange = null;
+  let settings = { hasKey: false, keySource: '', keyHint: '', autoSummarize: true };
+  const aiBusy = new Set(); // note ids whose AI summary is being written
+  const aiErrors = new Map(); // id -> last error message
+  const cleanErr = (e) => String((e && e.message) || e).replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
+
+  /* ---------- search ---------- */
+  // Typing in the sidebar box searches the full text of every note (in the main process).
+  // Matches in the open note are painted with the CSS Custom Highlight API, which never
+  // touches the editor's DOM, so highlights can't leak into saved notes.
+  const S = window.GathererSearch;
+  const canHighlight = typeof CSS !== 'undefined' && !!CSS.highlights && typeof Highlight === 'function';
+  let results = null; // SearchResult[] for `resultsFor`, or null when not searching
+  let resultsFor = '';
+  let searchSeq = 0;
+  let searchTimer = null;
+  let matchRanges = []; // Range[] of matches in the open note's title and body
+  let matchIdx = -1;
+  const query = () => el.filter.value.trim();
+  // The box takes "#tag" words, which keep only notes with that tag, and text, which is searched.
+  function parsedQuery() {
+    const words = query().split(/\s+/).filter(Boolean);
+    return {
+      text: words.filter((w) => !(w.startsWith('#') && w.length > 1)).join(' '),
+      tagWords: words.filter((w) => w.startsWith('#') && w.length > 1).map((w) => w.slice(1).toLowerCase()),
+    };
+  }
+  const textQuery = () => parsedQuery().text;
+  const hasTags = (n, tagWords) => {
+    const tags = ((n && n.userTags) || []).map((t) => t.toLowerCase());
+    return tagWords.every((w) => tags.some((t) => t === w || t.replace(/\s+/g, '-') === w));
+  };
+
+  function scheduleSearch(delay = 120) { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, delay); }
+  async function runSearch() {
+    clearTimeout(searchTimer);
+    const q = query();
+    const seq = ++searchSeq;
+    const changed = q !== resultsFor;
+    const text = textQuery();
+    let r = null;
+    if (text) { try { r = await api.notes.search(text); } catch { r = []; } }
+    if (seq !== searchSeq) return; // a newer search is on its way
+    results = r; resultsFor = q;
+    renderList();
+    if (changed) { el.list.scrollTop = 0; highlightNote(); }
+  }
+
+  // Title and snippet text with <mark>s around the given [start, end] ranges.
+  function marked(text, ranges) {
+    const frag = document.createDocumentFragment();
+    let pos = 0;
+    for (const [a, b] of ranges || []) {
+      if (a < pos || b > text.length) continue;
+      if (a > pos) frag.append(text.slice(pos, a));
+      const m = document.createElement('mark'); m.textContent = text.slice(a, b); frag.append(m);
+      pos = b;
+    }
+    frag.append(text.slice(pos));
+    return frag;
+  }
+
+  function renderResults() {
+    el.list.textContent = '';
+    const { tagWords } = parsedQuery();
+    const shown = results.filter((r) => hasTags(r, tagWords));
+    if (shown.length) {
+      const head = document.createElement('li');
+      head.className = 'result-head';
+      head.textContent = shown.length === 1 ? '1 note' : `${shown.length} notes`;
+      el.list.appendChild(head);
+    }
+    for (const r of shown) {
+      const li = document.createElement('li');
+      li.className = 'note result'; li.dataset.id = r.id;
+      if (current && current.id === r.id) li.classList.add('selected');
+      const t = document.createElement('div'); t.className = 't'; t.append(marked(r.title || 'Untitled', r.title ? r.titleRanges : []));
+      const s = document.createElement('div'); s.className = 's';
+      const a = document.createElement('span'); a.textContent = r.siteName || host(r.url);
+      const b = document.createElement('span');
+      b.textContent = r.hits > 1 ? `${r.hits >= 50 ? '50+' : r.hits} matches` : fmtDate(r.dateGathered, { dateStyle: 'short' });
+      s.append(a, b);
+      li.append(t, s);
+      if (r.snippet) { const p = document.createElement('div'); p.className = 'snip'; p.append(marked(r.snippet, r.snippetRanges)); li.appendChild(p); }
+      el.list.appendChild(li);
+    }
+    el.listEmpty.hidden = shown.length > 0;
+    el.listEmpty.textContent = !notes.length ? 'No notes yet.'
+      : tagWords.length ? `No notes tagged ${tagWords.map((w) => '#' + w).join(' ')} contain “${textQuery()}”.`
+      : `No notes contain “${resultsFor}”.`;
+    renderSubjectChip();
+    renderTags();
+  }
+
+  function textNodes(root) {
+    const out = [];
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) out.push(n);
+    return out;
+  }
+
+  // Find every match in the open note. `jump` scrolls to the first one.
+  function highlightNote({ jump = false } = {}) {
+    matchRanges = []; matchIdx = -1;
+    const terms = current && !el.view.hidden ? S.parseQuery(textQuery()) : [];
+    for (const root of terms.length ? [el.title, el.editor] : []) {
+      // Join the text nodes so a match can span formatting, e.g. "gather <b>pages</b>".
+      const nodes = textNodes(root);
+      const starts = [];
+      let text = '';
+      for (const n of nodes) { starts.push(text.length); text += n.data; }
+      let i = 0;
+      for (const [a, b] of S.findRanges(S.fold(text), terms, 2000)) {
+        while (i + 1 < nodes.length && starts[i + 1] <= a) i++;
+        let j = i;
+        while (j + 1 < nodes.length && starts[j + 1] < b) j++;
+        const r = document.createRange();
+        r.setStart(nodes[i], a - starts[i]); r.setEnd(nodes[j], b - starts[j]);
+        matchRanges.push(r);
+      }
+    }
+    if (canHighlight) {
+      CSS.highlights.delete('gatherer-current');
+      if (matchRanges.length) CSS.highlights.set('gatherer-search', new Highlight(...matchRanges));
+      else CSS.highlights.delete('gatherer-search');
+    }
+    if (jump && matchRanges.length) gotoMatch(0); else updateCount();
+  }
+
+  function gotoMatch(i) {
+    const n = matchRanges.length;
+    if (!n) return;
+    matchIdx = ((i % n) + n) % n;
+    const r = matchRanges[matchIdx];
+    if (canHighlight) CSS.highlights.set('gatherer-current', new Highlight(r));
+    const box = r.getBoundingClientRect();
+    const view = el.scroller.getBoundingClientRect();
+    if (box.top < view.top + 40 || box.bottom > view.bottom - 40) el.scroller.scrollTop += box.top - view.top - view.height / 3;
+    updateCount();
+  }
+
+  function updateCount() {
+    const n = matchRanges.length;
+    el.searchCount.hidden = !textQuery() || !current || el.view.hidden;
+    el.searchCount.textContent = !n ? '0' : matchIdx >= 0 ? `${matchIdx + 1}/${n}` : String(n);
+    el.searchCount.title = n ? `${n} match${n === 1 ? '' : 'es'} in this note. Enter or Cmd/Ctrl+G for the next, Shift for the previous.` : 'No matches in this note';
+  }
+
+  let rehighlightTimer = null;
+  const rehighlightSoon = () => {
+    if (!textQuery()) return;
+    clearTimeout(rehighlightTimer);
+    rehighlightTimer = setTimeout(() => { const keep = matchIdx; highlightNote(); if (keep >= 0 && matchRanges.length) { matchIdx = Math.min(keep, matchRanges.length - 1); if (canHighlight) CSS.highlights.set('gatherer-current', new Highlight(matchRanges[matchIdx])); updateCount(); } }, 400);
+  };
 
   const fmtDate = (iso, opts) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString(undefined, opts); };
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u || ''; } };
@@ -31,7 +193,7 @@
   const prefs = (() => {
     let p = {};
     try { p = JSON.parse(localStorage.getItem('gatherer:organize') || '{}') || {}; } catch {}
-    if (!['subject', 'source', 'date'].includes(p.mode)) p.mode = 'subject';
+    if (!['subject', 'source', 'date', 'tag'].includes(p.mode)) p.mode = 'subject';
     if (!p.collapsed || typeof p.collapsed !== 'object') p.collapsed = {};
     return p;
   })();
@@ -63,6 +225,25 @@
       for (const n of list) { const b = dateBucket(n.dateGathered, now); add(b.key, b.label, n); }
       return [...groups.values()].sort((a, b) => a.key.localeCompare(b.key));
     }
+    if (mode === 'tag') {
+      // A note with several tags shows under each of them.
+      const UNTAGGED = '~untagged';
+      for (const n of list) {
+        const tags = n.userTags || [];
+        if (!tags.length) add(UNTAGGED, 'Untagged', n);
+        for (const t of tags) add('tag:' + t.toLowerCase(), t, n);
+      }
+      const label = new Map();
+      // Use the most common spelling of a tag as its label.
+      for (const g of groups.values()) {
+        if (g.key === UNTAGGED) continue;
+        const c = new Map();
+        for (const n of g.notes) for (const t of n.userTags) if ('tag:' + t.toLowerCase() === g.key) c.set(t, (c.get(t) || 0) + 1);
+        label.set(g.key, [...c].sort((a, b) => b[1] - a[1])[0][0]);
+      }
+      for (const g of groups.values()) if (label.has(g.key)) g.label = label.get(g.key);
+      return [...groups.values()].sort((a, b) => (a.key === UNTAGGED) - (b.key === UNTAGGED) || b.notes.length - a.notes.length || a.label.localeCompare(b.label));
+    }
     if (mode === 'source') {
       // Prefer the site's own name ("The Verge") over its host when the page declared one.
       const names = new Map();
@@ -87,6 +268,7 @@
 
   function setMode(mode) {
     prefs.mode = mode; savePrefs();
+    renderRegroup();
     el.organize.querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
     renderList();
     const sel = el.list.querySelector('li.note.selected');
@@ -99,7 +281,7 @@
     const li = document.createElement('li');
     li.className = 'note'; li.dataset.id = n.id;
     if (current && current.id === n.id) li.classList.add('selected');
-    if (prefs.mode === 'subject') li.draggable = true;
+    if (prefs.mode === 'subject' || prefs.mode === 'tag') li.draggable = true;
     const t = document.createElement('div'); t.className = 't'; t.textContent = n.title || 'Untitled';
     const s = document.createElement('div'); s.className = 's';
     const a = document.createElement('span');
@@ -110,17 +292,27 @@
     b.textContent = prefs.mode === 'date' ? fmtDate(n.dateGathered, { timeStyle: 'short' }) : fmtDate(n.dateGathered, { dateStyle: 'short' });
     if (prefs.mode === 'date' && !/^[0-1]$/.test(dateBucket(n.dateGathered, new Date()).key)) b.textContent = fmtDate(n.dateGathered, { month: 'short', day: 'numeric' });
     s.append(a, b); li.append(t, s);
+    if (n.userTags && n.userTags.length) {
+      const tg = document.createElement('div'); tg.className = 'tg';
+      tg.textContent = n.userTags.map((x) => '#' + x).join('  ');
+      li.appendChild(tg);
+    }
     return li;
   }
 
   function renderList() {
-    const q = el.filter.value.trim().toLowerCase();
-    const match = (n) => !q || [n.title, n.url, n.siteName, n.subject].some((v) => (v || '').toLowerCase().includes(q));
+    const { text, tagWords } = parsedQuery();
+    if (text && results) return renderResults();
+    // "#tag" words must match one of the note's tags. Other words are searched in full text in the
+    // main process; while those results are on their way, match title, source, subject, tags or highlights.
+    const q = text.toLowerCase();
+    const match = (n) => hasTags(n, tagWords) &&
+      (!q || [n.title, n.url, n.siteName, n.subject, ...(n.userTags || []), ...(n.highlights || [])].some((v) => (v || '').toLowerCase().includes(q)));
     const shown = notes.filter(match);
     const scroll = el.list.scrollTop;
     el.list.textContent = '';
     for (const g of groupNotes(shown, prefs.mode)) {
-      const open = !!q || !prefs.collapsed[collapsedKey(g)];
+      const open = !!query() || !prefs.collapsed[collapsedKey(g)];
       const li = document.createElement('li');
       li.className = 'group' + (open ? ' open' : '');
       li.dataset.key = g.key; li.dataset.label = g.label;
@@ -130,6 +322,11 @@
       btn.querySelector('.name').textContent = g.label;
       btn.querySelector('.n').textContent = g.notes.length;
       btn.title = g.label;
+      if (prefs.mode === 'tag' && g.key.startsWith('tag:')) {
+        const ren = document.createElement('span');
+        ren.className = 'ren'; ren.textContent = '✎'; ren.title = `Rename ${g.label} on every note`;
+        btn.insertBefore(ren, btn.querySelector('.n'));
+      }
       li.appendChild(btn);
       el.list.appendChild(li);
       if (open) for (const n of g.notes) el.list.appendChild(noteItem(n));
@@ -138,6 +335,7 @@
     el.listEmpty.hidden = shown.length > 0;
     el.listEmpty.textContent = notes.length ? 'No matching notes.' : 'No notes yet.';
     renderSubjectChip();
+    renderTags();
   }
 
   async function refreshList() { notes = await api.notes.list(); renderList(); }
@@ -147,6 +345,7 @@
   function markDirty() {
     if (!current) return;
     dirty = true; setStatus('Saving…');
+    scheduleHighlights();
     clearTimeout(timer); timer = setTimeout(flush, 800);
   }
   function flush() {
@@ -159,6 +358,7 @@
       const i = notes.findIndex((n) => n.id === id);
       if (i >= 0 && sum) notes[i] = { ...notes[i], ...sum }; else if (i >= 0) notes[i].title = data.title;
       renderList();
+      if (query()) scheduleSearch(300); // the saved text may match differently now
       if (!dirty) setStatus('Saved');
     }).catch((e) => { dirty = true; setStatus('Save failed: ' + (e && e.message || e)); });
     return saving;
@@ -176,11 +376,15 @@
     el.date.textContent = fmtDate(note.dateGathered);
     el.url.textContent = note.url || ''; el.url.dataset.url = note.url || '';
     el.url.title = note.url || '';
-    setStatus(''); cancelDelete(); hideLink(); hideSubjectEdit();
+    setStatus(''); cancelDelete(); hideLink(); hideSubjectEdit(); hideBubble();
+    el.tagInput.value = ''; el.hlPanel.hidden = true;
     hideArchive(); renderArchive();
+    renderHighlights();
+    renderSummary();
     revealCurrent();
-    document.getElementById('scroller').scrollTop = 0;
+    el.scroller.scrollTop = 0;
     renderList();
+    highlightNote({ jump: true });
   }
 
   // Expand the group that holds the open note so the selection is never hidden.
@@ -235,6 +439,371 @@
   el.subjInput.addEventListener('blur', commitSubject);
   el.subjInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); hideSubjectEdit(); } });
 
+  /* ---------- tags ---------- */
+  const currentSummary = () => current && notes.find((x) => x.id === current.id);
+  const allTags = () => {
+    const m = new Map();
+    for (const n of notes) for (const t of n.userTags || []) { const k = t.toLowerCase(); if (!m.has(k)) m.set(k, t); }
+    return [...m.values()].sort((a, b) => a.localeCompare(b));
+  };
+  const tagFilterWord = (t) => '#' + t.toLowerCase().replace(/\s+/g, '-');
+
+  function renderTags() {
+    if (!current) return;
+    const n = currentSummary();
+    const tags = (n && n.userTags) || [];
+    el.tagList.textContent = '';
+    for (const t of tags) {
+      const chip = document.createElement('span'); chip.className = 'tag';
+      const name = document.createElement('button'); name.type = 'button'; name.className = 'tag-name';
+      name.textContent = t; name.title = `Show notes tagged ${t}`; name.dataset.tag = t;
+      const x = document.createElement('button'); x.type = 'button'; x.className = 'tag-x';
+      x.textContent = '×'; x.title = `Remove ${t}`; x.setAttribute('aria-label', `Remove tag ${t}`); x.dataset.remove = t;
+      chip.append(name, x); el.tagList.appendChild(chip);
+    }
+    el.tagInput.placeholder = tags.length ? '+' : 'Add tag…';
+    const have = new Set(tags.map((t) => t.toLowerCase()));
+    el.tagOptions.textContent = '';
+    for (const t of allTags()) if (!have.has(t.toLowerCase())) { const o = document.createElement('option'); o.value = t; el.tagOptions.appendChild(o); }
+  }
+
+  async function setTags(id, tags) {
+    try {
+      await flush();
+      saving = saving.then(() => api.notes.setTags(id, tags));
+      await saving;
+      await refreshList();
+    } catch (e) { setStatus(String(e.message || e)); saving = Promise.resolve(); }
+  }
+  // Reuse an existing tag's spelling so "ML" and "ml" don't become two tags.
+  function addTags(raw) {
+    const n = currentSummary();
+    if (!n) return;
+    const known = new Map(allTags().map((t) => [t.toLowerCase(), t]));
+    const cur = [...(n.userTags || [])];
+    const have = new Set(cur.map((t) => t.toLowerCase()));
+    for (let t of String(raw).split(',')) {
+      t = t.replace(/^#+/, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      if (!t || have.has(t.toLowerCase())) continue;
+      t = known.get(t.toLowerCase()) || t;
+      have.add(t.toLowerCase()); cur.push(t);
+    }
+    if (cur.length !== (n.userTags || []).length) return setTags(n.id, cur);
+  }
+  function removeTag(tag) {
+    const n = currentSummary();
+    if (n) return setTags(n.id, (n.userTags || []).filter((t) => t !== tag));
+  }
+  function commitTagInput() {
+    const v = el.tagInput.value;
+    el.tagInput.value = '';
+    if (v.trim()) addTags(v);
+  }
+  el.tagInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || (e.key === ',' && !e.isComposing)) { e.preventDefault(); commitTagInput(); }
+    else if (e.key === 'Backspace' && !el.tagInput.value) {
+      const n = currentSummary();
+      if (n && n.userTags && n.userTags.length) { e.preventDefault(); removeTag(n.userTags[n.userTags.length - 1]); }
+    } else if (e.key === 'Escape') { el.tagInput.value = ''; el.tagInput.blur(); }
+  });
+  // Picking a suggestion from the list adds it straight away.
+  el.tagInput.addEventListener('input', (e) => {
+    if (e.inputType === 'insertReplacementText' || (!e.inputType && [...el.tagOptions.options].some((o) => o.value === el.tagInput.value))) commitTagInput();
+  });
+  el.tagInput.addEventListener('blur', commitTagInput);
+  el.tagList.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.remove) return removeTag(b.dataset.remove);
+    if (b.dataset.tag) { el.filter.value = tagFilterWord(b.dataset.tag); runSearch(); }
+  });
+
+  // Tags view: the pencil on a tag's header renames it on every note (or merges it into another tag).
+  function renameTagAt(gh) {
+    const li = gh.parentElement;
+    const from = li.dataset.label;
+    const input = document.createElement('input');
+    input.type = 'text'; input.className = 'rename'; input.value = from; input.maxLength = 40;
+    gh.hidden = true; li.appendChild(input); input.focus(); input.select();
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return; done = true;
+      const to = input.value.replace(/^#+/, '').replace(/\s+/g, ' ').trim();
+      input.remove(); gh.hidden = false;
+      if (!commit || !to || to === from) return;
+      const existing = allTags().find((t) => t.toLowerCase() === to.toLowerCase() && t.toLowerCase() !== from.toLowerCase());
+      try {
+        await flush();
+        await api.tags.rename(from, existing || to);
+        const k = `tag:tag:${from.toLowerCase()}`;
+        if (prefs.collapsed[k]) { delete prefs.collapsed[k]; savePrefs(); }
+        await refreshList();
+      } catch (err) { setStatus(String(err.message || err)); }
+    };
+    input.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      if (ev.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('click', (ev) => ev.stopPropagation());
+  }
+
+  /* ---------- highlights ---------- */
+  // Highlights are <mark> elements around the passage. Selecting text shows a small
+  // "Highlight" button; clicking a highlight offers to remove it.
+  const BLOCKISH = /^(UL|OL|LI|TABLE|THEAD|TBODY|TFOOT|TR|DL|DIV|SECTION|ARTICLE|BLOCKQUOTE|FIGURE)$/;
+  const markOf = (node) => { const e = node && (node.nodeType === 1 ? node : node.parentElement); return e && el.editor.contains(e) ? e.closest('mark') : null; };
+
+  // Text nodes the range touches, each with the part of it that is selected.
+  function selectedTextParts(range) {
+    const parts = [];
+    const root = range.commonAncestorContainer;
+    const push = (t) => {
+      const start = t === range.startContainer ? range.startOffset : 0;
+      const end = t === range.endContainer ? range.endOffset : t.data.length;
+      if (end <= start) return;
+      // Whitespace between blocks (e.g. between list items) must not be wrapped.
+      if (!t.data.slice(start, end).trim() && t.parentElement && (t.parentElement === el.editor || BLOCKISH.test(t.parentElement.tagName))) return;
+      parts.push({ t, start, end });
+    };
+    if (root.nodeType === 3) { push(root); return parts; }
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let t = w.nextNode(); t; t = w.nextNode()) if (range.intersectsNode(t)) push(t);
+    return parts;
+  }
+
+  function unwrap(m) {
+    const p = m.parentNode;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    m.remove(); p.normalize();
+  }
+
+  function mergeAdjacentMarks() {
+    for (const m of [...el.editor.querySelectorAll('mark')]) {
+      if (!m.isConnected) continue;
+      let next = m.nextSibling;
+      while (next && next.nodeType === 1 && next.tagName === 'MARK') {
+        while (next.firstChild) m.appendChild(next.firstChild);
+        const gone = next; next = next.nextSibling; gone.remove();
+      }
+      m.normalize();
+    }
+  }
+
+  // Toggle: if everything selected is already highlighted, remove those highlights; otherwise highlight it all.
+  function toggleHighlight() {
+    const sel = getSelection();
+    if (!sel.rangeCount || !inEditor()) return;
+    const range = sel.getRangeAt(0);
+    if (range.collapsed) {
+      const m = markOf(range.startContainer);
+      if (m) { unwrap(m); afterHighlightChange(); }
+      return;
+    }
+    const parts = selectedTextParts(range).filter((p) => p.t.data.slice(p.start, p.end).trim() || !markOf(p.t));
+    if (!parts.length) return;
+    const allMarked = parts.every((p) => !p.t.data.slice(p.start, p.end).trim() || markOf(p.t));
+    if (allMarked) {
+      new Set(parts.map((p) => markOf(p.t)).filter(Boolean)).forEach(unwrap);
+    } else {
+      let last = null;
+      for (const { t, start, end } of parts) {
+        if (markOf(t)) { last = markOf(t); continue; }
+        let node = t;
+        if (end < node.data.length) node.splitText(end);
+        if (start > 0) node = node.splitText(start);
+        const m = document.createElement('mark');
+        node.parentNode.insertBefore(m, node); m.appendChild(node);
+        last = m;
+      }
+      mergeAdjacentMarks();
+      if (last && last.isConnected) { const r = document.createRange(); r.setStartAfter(last); r.collapse(true); sel.removeAllRanges(); sel.addRange(r); }
+    }
+    afterHighlightChange();
+  }
+  function afterHighlightChange() { hideBubble(); markDirty(); renderHighlights(); updateState(); }
+
+  // Highlight list under the note's details; click one to jump to it.
+  function renderHighlights() {
+    const marks = [...el.editor.querySelectorAll('mark')].filter((m) => m.textContent.trim());
+    el.hlWrap.hidden = !marks.length;
+    el.hlCount.textContent = marks.length;
+    if (!marks.length) el.hlPanel.hidden = true;
+    el.hlCount.setAttribute('aria-expanded', String(!el.hlPanel.hidden));
+    if (el.hlPanel.hidden) return;
+    el.hlPanel.textContent = '';
+    marks.forEach((m, i) => {
+      const li = document.createElement('li');
+      const b = document.createElement('button'); b.type = 'button'; b.dataset.i = i;
+      const txt = m.textContent.replace(/\s+/g, ' ').trim();
+      b.textContent = txt.length > 220 ? txt.slice(0, 219) + '…' : txt;
+      li.appendChild(b); el.hlPanel.appendChild(li);
+    });
+  }
+  let hlTimer = null;
+  function scheduleHighlights() { clearTimeout(hlTimer); hlTimer = setTimeout(renderHighlights, 300); }
+  el.hlCount.addEventListener('click', () => { el.hlPanel.hidden = !el.hlPanel.hidden; renderHighlights(); });
+  el.hlPanel.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const m = [...el.editor.querySelectorAll('mark')].filter((x) => x.textContent.trim())[+b.dataset.i];
+    if (!m) return;
+    m.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    m.classList.add('flash');
+    setTimeout(() => { m.classList.remove('flash'); if (!m.classList.length) m.removeAttribute('class'); }, 1200);
+  });
+
+  // Floating button by the selection.
+  let pointerDown = false, fromPointer = false;
+  function hideBubble() { el.bubble.hidden = true; }
+  function placeBubble() {
+    if (el.view.hidden || pointerDown || !inEditor()) return hideBubble();
+    const sel = getSelection();
+    const range = sel.getRangeAt(0);
+    let label;
+    let rect;
+    if (!range.collapsed) {
+      if (!range.toString().trim()) return hideBubble();
+      const parts = selectedTextParts(range).filter((p) => p.t.data.slice(p.start, p.end).trim());
+      label = parts.length && parts.every((p) => markOf(p.t)) ? 'Remove highlight' : 'Highlight';
+      const rects = [...range.getClientRects()].filter((r) => r.width);
+      rect = rects[0] || range.getBoundingClientRect();
+    } else {
+      const m = fromPointer && markOf(range.startContainer);
+      if (!m) return hideBubble();
+      label = 'Remove highlight';
+      rect = m.getClientRects()[0] || m.getBoundingClientRect();
+    }
+    el.bubbleBtn.textContent = label;
+    el.bubble.hidden = false;
+    const bw = el.bubble.offsetWidth, bh = el.bubble.offsetHeight;
+    const scroller = document.getElementById('scroller').getBoundingClientRect();
+    let top = rect.top - bh - 6;
+    if (top < scroller.top + 4) top = rect.bottom + 6;
+    const left = Math.max(scroller.left + 4, Math.min(rect.left + rect.width / 2 - bw / 2, scroller.right - bw - 4));
+    el.bubble.style.top = `${Math.round(top)}px`; el.bubble.style.left = `${Math.round(left)}px`;
+  }
+  el.editor.addEventListener('mousedown', () => { pointerDown = true; fromPointer = true; hideBubble(); });
+  document.addEventListener('mouseup', () => { if (pointerDown) { pointerDown = false; setTimeout(placeBubble, 0); } });
+  el.editor.addEventListener('keydown', (e) => {
+    fromPointer = false;
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'h') { e.preventDefault(); toggleHighlight(); }
+  });
+  el.editor.addEventListener('keyup', (e) => { if (e.shiftKey || e.key.startsWith('Arrow')) placeBubble(); });
+  document.addEventListener('selectionchange', () => { if (!el.bubble.hidden && !pointerDown) placeBubble(); });
+  document.getElementById('scroller').addEventListener('scroll', () => { if (!el.bubble.hidden) placeBubble(); });
+  el.bubble.addEventListener('mousedown', (e) => e.preventDefault());
+  el.bubbleBtn.addEventListener('click', toggleHighlight);
+
+  /* ---------- summary ---------- */
+  function renderSummary() {
+    if (!current) return;
+    const id = current.id;
+    const text = current.summary || '';
+    const isAi = current.summarySource === 'ai';
+    const busy = aiBusy.has(id);
+    el.summary.hidden = !text && !settings.hasKey;
+    el.sumText.textContent = text || (busy ? 'Writing a summary…' : 'No summary yet.');
+    el.sumText.classList.toggle('empty', !text);
+    el.sumBadge.textContent = isAi ? 'AI' : 'Local';
+    el.sumBadge.classList.toggle('ai', isAi);
+    el.sumBadge.hidden = !text;
+    el.sumBadge.title = isAi ? 'Written by Claude from the page text' : 'Picked from the page on this device, without AI';
+    const err = aiErrors.get(id);
+    el.sumStatus.textContent = busy ? 'Summarizing…' : err || '';
+    el.sumStatus.classList.toggle('error', !busy && !!err);
+    if (settings.hasKey) {
+      el.sumBtn.textContent = isAi ? 'Regenerate' : '\u2726 Summarize with AI';
+      el.sumBtn.title = isAi ? 'Ask Claude for a fresh summary' : 'Ask Claude to summarize this page';
+    } else {
+      el.sumBtn.textContent = 'Set up AI';
+      el.sumBtn.title = 'Add an Anthropic API key to get AI summaries';
+    }
+    el.sumBtn.disabled = busy;
+  }
+  el.sumBtn.addEventListener('click', async () => {
+    if (!current) return;
+    if (!settings.hasKey) { openSettings(); return; }
+    const id = current.id;
+    aiErrors.delete(id); aiBusy.add(id); renderSummary();
+    try { await flush(); await api.ai.summarize(id); }
+    catch (e) { aiErrors.set(id, cleanErr(e)); }
+    finally { aiBusy.delete(id); renderSummary(); }
+  });
+  api.onAiStatus(({ id, busy, error }) => {
+    if (busy) { aiBusy.add(id); aiErrors.delete(id); } else aiBusy.delete(id);
+    if (error) aiErrors.set(id, error);
+    if (current && current.id === id) renderSummary();
+  });
+  // A background summary landed: refresh the list (subjects may move) and the open summary.
+  api.onNoteChanged(async ({ id }) => {
+    try { await refreshList(); } catch {}
+    if (!current || current.id !== id) return;
+    try {
+      const n = await api.notes.get(id);
+      if (current && current.id === id) { current.summary = n.summary; current.summarySource = n.summarySource; current.topics = n.topics; renderSummary(); }
+    } catch {}
+  });
+
+  /* ---------- regroup by meaning ---------- */
+  let regrouping = false;
+  function renderRegroup() {
+    el.regroup.hidden = !settings.hasKey || prefs.mode !== 'subject';
+    el.regroup.disabled = regrouping;
+    if (el.regroup.hidden && !regrouping) el.regroupStatus.textContent = '';
+  }
+  el.regroup.addEventListener('click', async () => {
+    if (regrouping) return;
+    regrouping = true; renderRegroup();
+    el.regroupStatus.textContent = 'Grouping…'; el.regroupStatus.title = '';
+    try {
+      await flush();
+      notes = await api.ai.organize();
+      revealCurrent(); renderList();
+      el.regroupStatus.textContent = '';
+    } catch (e) {
+      el.regroupStatus.textContent = 'Failed'; el.regroupStatus.title = cleanErr(e);
+    } finally { regrouping = false; renderRegroup(); }
+  });
+
+  /* ---------- settings ---------- */
+  function applySettings(s) {
+    settings = s || settings;
+    renderRegroup();
+    if (current) renderSummary();
+    el.keyCurrent.textContent = settings.hasKey
+      ? (settings.keySource === 'environment' ? `Using the key from ANTHROPIC_API_KEY (${settings.keyHint}).` : `A key is saved (${settings.keyHint}).`)
+      : 'No key saved. AI features are off.';
+    el.keyRemove.hidden = settings.keySource !== 'settings';
+    el.autoSum.checked = settings.autoSummarize !== false;
+    el.autoSum.disabled = !settings.hasKey;
+  }
+  function setMsg(text, isErr) { el.setMsg.textContent = text; el.setMsg.hidden = !text; el.setMsg.classList.toggle('error', !!isErr); }
+  function openSettings() { setMsg(''); el.keyInput.value = ''; applySettings(); el.settings.hidden = false; el.keyInput.focus(); }
+  function closeSettings() { el.settings.hidden = true; }
+  $('settings-btn').addEventListener('click', openSettings);
+  $('settings-close').addEventListener('click', closeSettings);
+  $('console-link').addEventListener('click', (e) => { e.preventDefault(); api.openExternal(e.currentTarget.href); });
+  el.settings.addEventListener('mousedown', (e) => { if (e.target === el.settings) closeSettings(); });
+  el.settings.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeSettings(); } });
+  el.setForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const key = el.keyInput.value.trim();
+    if (!key) { setMsg('Paste a key first.', true); return; }
+    setMsg('Checking the key…');
+    try { applySettings(await api.settings.setKey(key)); el.keyInput.value = ''; setMsg('Saved. New pages will get AI summaries.'); }
+    catch (err) { setMsg(cleanErr(err), true); }
+  });
+  el.keyRemove.addEventListener('click', async () => {
+    try { applySettings(await api.settings.setKey('')); setMsg('Key removed. Gatherer is back to local summaries.'); }
+    catch (err) { setMsg(cleanErr(err), true); }
+  });
+  el.autoSum.addEventListener('change', async () => {
+    try { applySettings(await api.settings.setAutoSummarize(el.autoSum.checked)); } catch (err) { setMsg(cleanErr(err), true); }
+  });
+
+
   /* ---------- offline copy ---------- */
   // Every note keeps a full snapshot of the original page that opens with no network.
   const fmtSize = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
@@ -279,11 +848,13 @@
 
   function showEmpty() {
     hideArchive();
-    current = null; el.view.hidden = true; el.empty.hidden = false; renderList();
+    current = null; el.view.hidden = true; el.empty.hidden = false; renderList(); highlightNote();
   }
 
   /* ---------- editor / toolbar ---------- */
   el.title.addEventListener('input', markDirty);
+  el.title.addEventListener('input', rehighlightSoon);
+  el.editor.addEventListener('input', rehighlightSoon);
   el.title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.editor.focus(); } });
   el.editor.addEventListener('input', markDirty);
   el.editor.addEventListener('paste', (e) => {
@@ -324,6 +895,7 @@
       case 'blockquote': return toggleBlock('blockquote');
       case 'code': return toggleBlock('pre');
       case 'link': return showLink();
+      case 'highlight': return toggleHighlight();
     }
   });
   el.block.addEventListener('change', () => {
@@ -342,6 +914,7 @@
     el.block.value = ['h1', 'h2', 'h3'].includes(v) ? v : 'p';
     toolbarBlock('blockquote', v === 'blockquote'); toolbarBlock('code', v === 'pre');
     const a = getSelection().anchorNode;
+    el.hlBtn.classList.toggle('active', !!markOf(a));
     document.getElementById('link-btn').classList.toggle('active', !!(a && (a.nodeType === 1 ? a : a.parentElement).closest('#editor a')));
   }
   function toolbarBlock(act, on) { el.toolbar.querySelector(`[data-act="${act}"]`).classList.toggle('active', on); }
@@ -389,6 +962,7 @@
   /* ---------- list interactions ---------- */
   el.list.addEventListener('click', (e) => {
     const gh = e.target.closest('.gh');
+    if (gh && e.target.closest('.ren')) { renameTagAt(gh); return; }
     if (gh) {
       const k = `${prefs.mode}:${gh.parentElement.dataset.key}`;
       if (gh.parentElement.classList.contains('open')) prefs.collapsed[k] = true; else delete prefs.collapsed[k];
@@ -396,11 +970,12 @@
     }
     const li = e.target.closest('li.note');
     if (li && !(current && current.id === li.dataset.id)) openNote(li.dataset.id);
+    else if (li && textQuery()) gotoMatch(matchIdx + 1);
   });
 
   // Up/Down moves between visible notes, wherever focus is in the sidebar (except the filter box).
   document.getElementById('sidebar').addEventListener('keydown', (e) => {
-    if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || e.target === el.filter) return;
+    if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || (e.target === el.filter && !results)) return;
     const items = [...el.list.querySelectorAll('li.note')];
     if (!items.length) return;
     e.preventDefault();
@@ -413,7 +988,7 @@
   let dragId = null;
   el.list.addEventListener('dragstart', (e) => {
     const li = e.target.closest('li.note');
-    if (!li || prefs.mode !== 'subject') return;
+    if (!li || (prefs.mode !== 'subject' && prefs.mode !== 'tag')) return;
     dragId = li.dataset.id; li.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId);
   });
@@ -443,10 +1018,33 @@
     e.preventDefault();
     const id = dragId; dragId = null;
     const n = notes.find((x) => x.id === id);
+    if (prefs.mode === 'tag') {
+      // Dropping on a tag adds that tag (the note keeps its other tags).
+      if (!n || !g.dataset.key.startsWith('tag:') || (n.userTags || []).some((t) => t.toLowerCase() === g.dataset.label.toLowerCase())) { renderList(); return; }
+      await setTags(id, [...(n.userTags || []), g.dataset.label]);
+      return;
+    }
     if (!n || (n.subject || OTHER) === g.dataset.label) { renderList(); return; }
     await setSubject(id, g.dataset.label === OTHER ? '' : g.dataset.label);
   });
-  el.filter.addEventListener('input', renderList);
+  el.filter.addEventListener('input', () => { if (!query()) runSearch(); else { if (!results) renderList(); scheduleSearch(); } });
+  el.filter.addEventListener('keydown', async (e) => {
+    if (e.key === 'Escape') {
+      if (!el.filter.value) return el.filter.blur();
+      e.preventDefault(); el.filter.value = ''; runSearch(); return;
+    }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (query() !== resultsFor) await runSearch();
+    if (matchRanges.length) gotoMatch(matchIdx + (e.shiftKey ? -1 : 1));
+    else if (results && results.length) openNote(results[0].id);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || !el.modal.hidden) return;
+    const k = e.key.toLowerCase();
+    if (k === 'f' && !e.shiftKey) { e.preventDefault(); el.filter.focus(); el.filter.select(); }
+    else if (k === 'g' && matchRanges.length) { e.preventDefault(); gotoMatch(matchIdx + (e.shiftKey ? -1 : 1)); }
+  });
 
   /* ---------- modal ---------- */
   let busy = false;
@@ -485,9 +1083,12 @@
   /* ---------- lifecycle ---------- */
   window.addEventListener('beforeunload', () => { flush(); });
   api.onFlushRequest(() => flush());
+  api.onNotesChanged(() => refreshList().catch((e) => setStatus(String(e.message || e))));
   window.addEventListener('blur', () => { if (dirty) flush(); });
 
   (async () => {
+    try { applySettings(await api.settings.get()); } catch {}
+    try { for (const id of await api.notes.aiBusy()) aiBusy.add(id); } catch {}
     setMode(prefs.mode);
     try { await refreshList(); } catch (e) { el.listEmpty.textContent = String(e.message || e); el.listEmpty.hidden = false; }
     if (notes.length) openNote(notes[0].id); else showEmpty();

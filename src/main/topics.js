@@ -6,6 +6,10 @@
 // collection they explain, then every note is assigned to the best subject among its keywords.
 // Notes that share nothing with any other note go to "Other". Subjects the user pinned by hand
 // act as seeds, so similar notes gather around them automatically.
+//
+// When the optional AI layer (ai.js) has labelled a note by meaning, those labels ride along as
+// very strong candidate terms, so notes the AI put together end up together even when they share
+// no vocabulary. Without them this is the same keyword inference as before.
 
 const OTHER = 'Other';
 
@@ -91,8 +95,11 @@ function titleCase(s) {
 }
 
 // Build a per-note term profile. Kept separate so callers can cache it per file.
-//   note = { title, text, tags: string[] }
-function profile({ title, text, tags }) {
+//   note = { title, text, tags: string[], aiTopics?: string[] }
+const AI_WEIGHT = 12;
+const wholeKey = (label) => [...terms(label).keys()].filter((k) => !k.includes(' ')).join(' ');
+
+function profile({ title, text, tags, aiTopics }) {
   const tf = new Map();
   const add = (m, w) => { for (const [t, c] of m) tf.set(t, (tf.get(t) || 0) + c * w); };
   add(terms(title), 3);
@@ -110,10 +117,19 @@ function profile({ title, text, tags }) {
     const tt = [...terms(tag).keys()].filter((k) => !k.includes(' ')).join(' ');
     if (tt) bump(forms, '#' + tt, normLabel(tag));
   }
+  // AI subject labels: the first one is the AI's best fit, so it weighs most.
+  const ai = new Set();
+  (aiTopics || []).forEach((label, i) => {
+    const k = wholeKey(label);
+    if (!k || k === 'other' || ai.has(k)) return;
+    ai.add(k);
+    tf.set('#' + k, (tf.get('#' + k) || 0) + AI_WEIGHT / (i + 1));
+    for (let j = 0; j < 50; j++) bump(forms, '#' + k, normLabel(label));
+  });
   // Dampen raw counts so one long article does not dominate.
   const w = new Map();
   for (const [t, c] of tf) w.set(t, 1 + Math.log(c));
-  return { w, forms };
+  return { w, forms, ai };
 }
 
 // notes: [{ id, profile, pinned? }] -> Map(id -> subject label)
@@ -139,12 +155,15 @@ function inferSubjects(notes) {
   for (const n of notes) {
     // "#machine learning" (a page tag) and "machine learning" (body text) are the same candidate.
     const acc = new Map();
+    const ai = n.profile.ai || new Set();
     for (const [t, w] of n.profile.w) {
       const d = df.get(t);
-      if (d > maxDf && !seedTerm.has(t.replace(/^#/, ''))) continue;
-      const idf = Math.log(1 + N / d);
-      const boost = (t.startsWith('#') ? 1.6 : t.includes(' ') ? 1.35 : 1);
       const k = t.startsWith('#') ? t.slice(1) : t;
+      const isAi = t.startsWith('#') && ai.has(k);
+      // A meaning-based label stays a candidate even when most notes share it.
+      if (d > maxDf && !isAi && !seedTerm.has(k)) continue;
+      const idf = Math.log(1 + N / d);
+      const boost = isAi ? 3 : t.startsWith('#') ? 1.6 : t.includes(' ') ? 1.35 : 1;
       acc.set(k, (acc.get(k) || 0) + w * idf * boost);
     }
     const scored = [...acc].map(([t, s]) => ({ t, s }));
