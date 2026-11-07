@@ -25,6 +25,10 @@
     </div>
     <ul id="list"></ul>
     <div id="list-empty" class="muted" hidden>No notes yet.</div>
+    <div id="sidebar-foot">
+      <button id="sync-btn" type="button" title="Sync notes across your Macs with iCloud Drive"><span id="sync-dot"></span><span id="sync-label">iCloud sync is off</span></button>
+      <button id="export-all-btn" type="button" title="Export every note as Markdown">Export all</button>
+    </div>
     <div id="side-foot">
       <button id="regroup-btn" type="button" title="Ask the AI to group your notes by what they mean, not by shared words" hidden>&#10022; Regroup by meaning</button>
       <span id="regroup-status" class="muted"></span>
@@ -68,6 +72,13 @@
         <button data-cmd="redo" title="Redo">&#8631;</button>
         <span class="spacer"></span>
         <span id="save-status" class="muted"></span>
+        <span id="export-wrap">
+          <button id="export-btn" type="button" title="Export this note" aria-haspopup="menu" aria-expanded="false">Export</button>
+          <span id="export-menu" role="menu" hidden>
+            <button type="button" role="menuitem" data-format="markdown">Markdown…</button>
+            <button type="button" role="menuitem" data-format="pdf">PDF…</button>
+          </span>
+        </span>
         <span id="delete-wrap">
           <button id="delete-btn" class="danger" title="Delete note">Delete</button>
           <span id="delete-confirm" hidden>
@@ -153,6 +164,28 @@
     </div>
   </form>
 </div>
+
+<div id="sync-modal" class="backdrop" hidden>
+  <div class="dialog" role="dialog" aria-labelledby="sync-title">
+    <h3 id="sync-title">iCloud sync</h3>
+    <p id="sync-intro" class="muted">Keep your notes in a folder in iCloud Drive, and every Mac signed in to the same iCloud account gets them. Each Mac keeps its own full copy, so notes still open offline.</p>
+    <dl id="sync-info" hidden>
+      <dt>Folder</dt><dd id="sync-folder"></dd>
+      <dt>Last synced</dt><dd id="sync-when"></dd>
+    </dl>
+    <div id="sync-note" class="muted" hidden></div>
+    <div id="sync-error" class="error" hidden></div>
+    <div class="actions">
+      <button type="button" id="sync-off" class="danger" hidden>Turn off</button>
+      <span class="spacer"></span>
+      <button type="button" id="sync-close">Close</button>
+      <button type="button" id="sync-now" hidden>Sync now</button>
+      <button type="button" id="sync-choose" class="primary">Choose folder…</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" role="status" hidden><span id="toast-text"></span> <button type="button" id="toast-action" hidden>Show in Finder</button></div>
 
 <div id="hl-bubble" hidden><button type="button" id="hl-bubble-btn">Highlight</button></div>
 
