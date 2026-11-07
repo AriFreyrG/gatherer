@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f8f6b"/>
+      <stop offset="1" stop-color="#1b5e4a"/>
+    </linearGradient>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eef3ef"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0b3326" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <!-- macOS icon grid: 824px body inside the 1024 canvas -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+  <!-- back page, tilted -->
+  <g transform="rotate(-8 512 540)" filter="url(#soft)">
+    <rect x="290" y="290" width="360" height="480" rx="34" fill="#cfe6da"/>
+  </g>
+  <!-- front page with folded corner -->
+  <g filter="url(#soft)">
+    <path d="M330 230 H620 L720 330 V770 A34 34 0 0 1 686 804 H330 A34 34 0 0 1 296 770 V264 A34 34 0 0 1 330 230 Z" fill="url(#page)"/>
+    <path d="M620 230 V300 A30 30 0 0 0 650 330 H720 Z" fill="#c4dccf"/>
+  </g>
+  <!-- text lines -->
+  <g fill="#2f8f6b" opacity="0.9">
+    <rect x="360" y="380" width="230" height="30" rx="15"/>
+  </g>
+  <g fill="#9cb8aa">
+    <rect x="360" y="450" width="300" height="20" rx="10"/>
+    <rect x="360" y="500" width="300" height="20" rx="10"/>
+    <rect x="360" y="550" width="250" height="20" rx="10"/>
+    <rect x="360" y="620" width="230" height="20" rx="10"/>
+    <rect x="360" y="670" width="170" height="20" rx="10"/>
+  </g>
+  <!-- bookmark ribbon -->
+  <path d="M620 560 H700 V760 L660 728 L620 760 Z" fill="#f2a93b" filter="url(#soft)"/>
+</svg>

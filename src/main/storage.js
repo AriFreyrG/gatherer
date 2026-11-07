@@ -131,4 +131,32 @@ function remove(id) {
   return true;
 }
 
-module.exports = { setDir, list, get, create, save, setSubject, remove, assetsRoot, assetDir };
+// Copies one note file from another Gatherer notes folder (srcDir) into this library, with its
+// images. Keeps the note's id when it is free; a different note under the same id gets a new id.
+// Returns the id it was saved under, or null when the same note is already here.
+function importNote(srcDir, file) {
+  const oldId = file.slice(0, -5);
+  fileFor(oldId);
+  const html = fs.readFileSync(path.join(srcDir, file), 'utf8');
+  if (!/<meta\s+name="gatherer:url"/i.test(html)) throw new Error('Not a Gatherer note');
+  const note = parse(oldId, html);
+  let id = oldId;
+  if (fs.existsSync(fileFor(id))) {
+    if (get(id).content === sanitize(note.content)) return null;
+    id = newId();
+  }
+  const srcAssets = path.join(srcDir, 'assets', oldId);
+  if (fs.existsSync(srcAssets)) {
+    const dest = assetDir(id);
+    fs.mkdirSync(dest, { recursive: true });
+    for (const f of fs.readdirSync(srcAssets)) {
+      const from = path.join(srcAssets, f);
+      if (/^[\w-]+\.[a-z]+$/i.test(f) && fs.lstatSync(from).isFile()) fs.copyFileSync(from, path.join(dest, f));
+    }
+  }
+  const content = id === oldId ? note.content : note.content.split(`gatherer-asset://${oldId}/`).join(`gatherer-asset://${id}/`);
+  writeAtomic(fileFor(id), render({ ...note, tags: cleanTags(note.tags), content: sanitize(content) }));
+  return id;
+}
+
+module.exports = { setDir, getDir, list, get, create, save, setSubject, remove, importNote, assetsRoot, assetDir };

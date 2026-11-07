@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('gatherer', {
     delete: (id) => ipcRenderer.invoke('notes:delete', id),
   },
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  // Main tells the renderer when notes changed outside it (e.g. after File > Import Notes).
+  onNotesChanged: (fn) => ipcRenderer.on('notes:changed', () => fn()),
   // Main asks the renderer to save pending edits before the window closes.
   onFlushRequest: (fn) => ipcRenderer.on('app:flush', async () => {
     try { await fn(); } catch { /* close anyway */ } finally { ipcRenderer.send('app:flushed'); }

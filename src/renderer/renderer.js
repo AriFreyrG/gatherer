@@ -439,6 +439,7 @@
   /* ---------- lifecycle ---------- */
   window.addEventListener('beforeunload', () => { flush(); });
   api.onFlushRequest(() => flush());
+  api.onNotesChanged(() => refreshList().catch((e) => setStatus(String(e.message || e))));
   window.addEventListener('blur', () => { if (dirty) flush(); });
 
   (async () => {
