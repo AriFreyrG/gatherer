@@ -12,6 +12,11 @@
     delBtn: $('delete-btn'), delConfirm: $('delete-confirm'),
     organize: $('organize'), chip: $('subject-chip'), subjForm: $('subject-form'),
     subjInput: $('subject-input'), subjOptions: $('subject-options'),
+    summary: $('summary'), sumText: $('summary-text'), sumBadge: $('summary-badge'),
+    sumBtn: $('summary-btn'), sumStatus: $('summary-status'),
+    regroup: $('regroup-btn'), regroupStatus: $('regroup-status'),
+    settings: $('settings'), setForm: $('settings-form'), keyInput: $('key-input'),
+    keyCurrent: $('key-current'), keyRemove: $('key-remove'), autoSum: $('auto-summarize'), setMsg: $('settings-msg'),
   };
 
   let notes = [];
@@ -20,6 +25,10 @@
   let timer = null;
   let saving = Promise.resolve();
   let savedRange = null;
+  let settings = { hasKey: false, keySource: '', keyHint: '', autoSummarize: true };
+  const aiBusy = new Set(); // note ids whose AI summary is being written
+  const aiErrors = new Map(); // id -> last error message
+  const cleanErr = (e) => String((e && e.message) || e).replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
 
   const fmtDate = (iso, opts) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString(undefined, opts); };
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u || ''; } };
@@ -85,6 +94,7 @@
 
   function setMode(mode) {
     prefs.mode = mode; savePrefs();
+    renderRegroup();
     el.organize.querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
     renderList();
     const sel = el.list.querySelector('li.note.selected');
@@ -175,6 +185,7 @@
     el.url.textContent = note.url || ''; el.url.dataset.url = note.url || '';
     el.url.title = note.url || '';
     setStatus(''); cancelDelete(); hideLink(); hideSubjectEdit();
+    renderSummary();
     revealCurrent();
     document.getElementById('scroller').scrollTop = 0;
     renderList();
@@ -231,6 +242,113 @@
   el.subjForm.addEventListener('submit', (e) => { e.preventDefault(); commitSubject(); });
   el.subjInput.addEventListener('blur', commitSubject);
   el.subjInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); hideSubjectEdit(); } });
+
+  /* ---------- summary ---------- */
+  function renderSummary() {
+    if (!current) return;
+    const id = current.id;
+    const text = current.summary || '';
+    const isAi = current.summarySource === 'ai';
+    const busy = aiBusy.has(id);
+    el.summary.hidden = !text && !settings.hasKey;
+    el.sumText.textContent = text || (busy ? 'Writing a summary…' : 'No summary yet.');
+    el.sumText.classList.toggle('empty', !text);
+    el.sumBadge.textContent = isAi ? 'AI' : 'Local';
+    el.sumBadge.classList.toggle('ai', isAi);
+    el.sumBadge.hidden = !text;
+    el.sumBadge.title = isAi ? 'Written by Claude from the page text' : 'Picked from the page on this device, without AI';
+    const err = aiErrors.get(id);
+    el.sumStatus.textContent = busy ? 'Summarizing…' : err || '';
+    el.sumStatus.classList.toggle('error', !busy && !!err);
+    if (settings.hasKey) {
+      el.sumBtn.textContent = isAi ? 'Regenerate' : '\u2726 Summarize with AI';
+      el.sumBtn.title = isAi ? 'Ask Claude for a fresh summary' : 'Ask Claude to summarize this page';
+    } else {
+      el.sumBtn.textContent = 'Set up AI';
+      el.sumBtn.title = 'Add an Anthropic API key to get AI summaries';
+    }
+    el.sumBtn.disabled = busy;
+  }
+  el.sumBtn.addEventListener('click', async () => {
+    if (!current) return;
+    if (!settings.hasKey) { openSettings(); return; }
+    const id = current.id;
+    aiErrors.delete(id); aiBusy.add(id); renderSummary();
+    try { await flush(); await api.ai.summarize(id); }
+    catch (e) { aiErrors.set(id, cleanErr(e)); }
+    finally { aiBusy.delete(id); renderSummary(); }
+  });
+  api.onAiStatus(({ id, busy, error }) => {
+    if (busy) { aiBusy.add(id); aiErrors.delete(id); } else aiBusy.delete(id);
+    if (error) aiErrors.set(id, error);
+    if (current && current.id === id) renderSummary();
+  });
+  // A background summary landed: refresh the list (subjects may move) and the open summary.
+  api.onNoteChanged(async ({ id }) => {
+    try { await refreshList(); } catch {}
+    if (!current || current.id !== id) return;
+    try {
+      const n = await api.notes.get(id);
+      if (current && current.id === id) { current.summary = n.summary; current.summarySource = n.summarySource; current.topics = n.topics; renderSummary(); }
+    } catch {}
+  });
+
+  /* ---------- regroup by meaning ---------- */
+  let regrouping = false;
+  function renderRegroup() {
+    el.regroup.hidden = !settings.hasKey || prefs.mode !== 'subject';
+    el.regroup.disabled = regrouping;
+    if (el.regroup.hidden && !regrouping) el.regroupStatus.textContent = '';
+  }
+  el.regroup.addEventListener('click', async () => {
+    if (regrouping) return;
+    regrouping = true; renderRegroup();
+    el.regroupStatus.textContent = 'Grouping…'; el.regroupStatus.title = '';
+    try {
+      await flush();
+      notes = await api.ai.organize();
+      revealCurrent(); renderList();
+      el.regroupStatus.textContent = '';
+    } catch (e) {
+      el.regroupStatus.textContent = 'Failed'; el.regroupStatus.title = cleanErr(e);
+    } finally { regrouping = false; renderRegroup(); }
+  });
+
+  /* ---------- settings ---------- */
+  function applySettings(s) {
+    settings = s || settings;
+    renderRegroup();
+    if (current) renderSummary();
+    el.keyCurrent.textContent = settings.hasKey
+      ? (settings.keySource === 'environment' ? `Using the key from ANTHROPIC_API_KEY (${settings.keyHint}).` : `A key is saved (${settings.keyHint}).`)
+      : 'No key saved. AI features are off.';
+    el.keyRemove.hidden = settings.keySource !== 'settings';
+    el.autoSum.checked = settings.autoSummarize !== false;
+    el.autoSum.disabled = !settings.hasKey;
+  }
+  function setMsg(text, isErr) { el.setMsg.textContent = text; el.setMsg.hidden = !text; el.setMsg.classList.toggle('error', !!isErr); }
+  function openSettings() { setMsg(''); el.keyInput.value = ''; applySettings(); el.settings.hidden = false; el.keyInput.focus(); }
+  function closeSettings() { el.settings.hidden = true; }
+  $('settings-btn').addEventListener('click', openSettings);
+  $('settings-close').addEventListener('click', closeSettings);
+  $('console-link').addEventListener('click', (e) => { e.preventDefault(); api.openExternal(e.currentTarget.href); });
+  el.settings.addEventListener('mousedown', (e) => { if (e.target === el.settings) closeSettings(); });
+  el.settings.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeSettings(); } });
+  el.setForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const key = el.keyInput.value.trim();
+    if (!key) { setMsg('Paste a key first.', true); return; }
+    setMsg('Checking the key…');
+    try { applySettings(await api.settings.setKey(key)); el.keyInput.value = ''; setMsg('Saved. New pages will get AI summaries.'); }
+    catch (err) { setMsg(cleanErr(err), true); }
+  });
+  el.keyRemove.addEventListener('click', async () => {
+    try { applySettings(await api.settings.setKey('')); setMsg('Key removed. Gatherer is back to local summaries.'); }
+    catch (err) { setMsg(cleanErr(err), true); }
+  });
+  el.autoSum.addEventListener('change', async () => {
+    try { applySettings(await api.settings.setAutoSummarize(el.autoSum.checked)); } catch (err) { setMsg(cleanErr(err), true); }
+  });
 
   function showEmpty() {
     current = null; el.view.hidden = true; el.empty.hidden = false; renderList();
@@ -442,6 +560,8 @@
   window.addEventListener('blur', () => { if (dirty) flush(); });
 
   (async () => {
+    try { applySettings(await api.settings.get()); } catch {}
+    try { for (const id of await api.notes.aiBusy()) aiBusy.add(id); } catch {}
     setMode(prefs.mode);
     try { await refreshList(); } catch (e) { el.listEmpty.textContent = String(e.message || e); el.listEmpty.hidden = false; }
     if (notes.length) openNote(notes[0].id); else showEmpty();
