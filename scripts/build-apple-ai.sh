@@ -8,7 +8,7 @@ if [ "$(uname)" != "Darwin" ]; then echo "build-apple-ai: not a Mac, skipping"; 
 mkdir -p bin
 # Universal so the universal/MAS build can lipo-merge cleanly; Intel Macs just report "unavailable".
 if swift build -c release --arch arm64 --arch x86_64; then
-  cp .build/apple/Products/Release/gatherer-ai bin/gatherer-ai
+  cp "$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/gatherer-ai" bin/gatherer-ai
 else
   echo "build-apple-ai: universal build failed, building for this Mac only"
   swift build -c release

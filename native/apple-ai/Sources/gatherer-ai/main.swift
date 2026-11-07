@@ -77,7 +77,7 @@ func describe(_ error: Error) -> (String, String) {
     return ("error", error.localizedDescription)
 }
 
-let clean: (String) -> String = { s in
+func clean(_ s: String) -> String {
     s.replacingOccurrences(of: "[\\r\\n,]+", with: " ", options: .regularExpression)
         .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
         .trimmingCharacters(in: .whitespaces)
