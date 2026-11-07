@@ -24,6 +24,12 @@
     </div>
     <ul id="list"></ul>
     <div id="list-empty" class="muted" hidden>No notes yet.</div>
+    <div id="side-foot">
+      <button id="regroup-btn" type="button" title="Ask the AI to group your notes by what they mean, not by shared words" hidden>&#10022; Regroup by meaning</button>
+      <span id="regroup-status" class="muted"></span>
+      <span class="spacer"></span>
+      <button id="settings-btn" type="button" title="Settings">&#9881; Settings</button>
+    </div>
   </aside>
 
   <main id="main">
@@ -89,6 +95,16 @@
               </form>
             </span>
           </div>
+          <section id="summary" hidden>
+            <div class="sh">
+              <span class="label">Summary</span>
+              <span id="summary-badge" class="badge"></span>
+              <span class="spacer"></span>
+              <span id="summary-status" class="muted"></span>
+              <button id="summary-btn" type="button"></button>
+            </div>
+            <p id="summary-text"></p>
+          </section>
           <div id="editor" contenteditable="true" spellcheck="true"></div>
         </article>
       </div>
@@ -106,6 +122,28 @@
       <button type="button" id="modal-cancel">Cancel</button>
       <button type="submit" id="modal-go" class="primary">Gather</button>
     </div>
+  </form>
+</div>
+
+<div id="settings" class="backdrop" hidden>
+  <form id="settings-form" class="dialog">
+    <h3>Settings</h3>
+    <section class="field">
+      <label for="key-input"><b>AI summaries and grouping</b></label>
+      <p class="muted small">Gatherer can use Claude to write a short summary of each page and to group notes by meaning.
+        Paste your own Anthropic API key from <a href="https://console.anthropic.com/settings/keys" id="console-link">console.anthropic.com</a>.
+        Page text is sent to Anthropic only when a summary or regroup runs. The key is stored encrypted in your system keychain.
+        Without a key everything still works offline, with local summaries and keyword grouping.</p>
+      <div id="key-current" class="muted small"></div>
+      <div class="row">
+        <input id="key-input" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+        <button id="key-save" class="primary" type="submit">Save key</button>
+        <button id="key-remove" type="button" class="danger" hidden>Remove</button>
+      </div>
+      <label class="check"><input id="auto-summarize" type="checkbox"> Summarize new pages automatically</label>
+      <div id="settings-msg" class="small" hidden></div>
+    </section>
+    <div class="actions"><button type="button" id="settings-close">Done</button></div>
   </form>
 </div>
 

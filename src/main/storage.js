@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { sanitize } = require('./scraper');
 const topics = require('./topics');
+const { localSummary } = require('./summarize');
 const match = require('../renderer/search-core');
 
 let dir = null;
@@ -32,12 +33,14 @@ function newId() {
 }
 
 // Optional metadata: siteName and tags come from the page when gathered; subject is set by the
-// user to override automatic organisation (empty = automatic).
-function render({ title, url, dateGathered, content, siteName, tags, subject }) {
+// user to override automatic organisation (empty = automatic). summary and topics are written by
+// the optional AI layer: a short summary, and subject labels chosen by meaning.
+function render({ title, url, dateGathered, content, siteName, tags, subject, summary, topics: aiTopics }) {
   const opt = (name, v) => (v ? `<meta name="gatherer:${name}" content="${esc(v)}">\n` : '');
   return `<!doctype html>\n<html><head><meta charset="utf-8"><title>${esc(title)}</title>\n` +
     `<meta name="gatherer:url" content="${esc(url)}">\n<meta name="gatherer:date-gathered" content="${esc(dateGathered)}">\n` +
     opt('site-name', siteName) + opt('tags', (tags || []).join(', ')) + opt('subject', subject) +
+    opt('summary', summary) + opt('topics', (aiTopics || []).join(', ')) +
     `</head><body>${content}</body></html>\n`;
 }
 
@@ -48,10 +51,11 @@ function parse(id, html) {
   };
   const t = html.match(/<title>([\s\S]*?)<\/title>/i);
   const b = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-  const tags = metaVal('tags').split(',').map((x) => x.trim()).filter(Boolean);
+  const csv = (v) => v.split(',').map((x) => x.trim()).filter(Boolean);
   return {
     id, title: t ? unesc(t[1]) : 'Untitled', url: metaVal('url'), dateGathered: metaVal('date-gathered'),
-    siteName: metaVal('site-name'), tags, subject: metaVal('subject'), content: b ? b[1] : '',
+    siteName: metaVal('site-name'), tags: csv(metaVal('tags')), subject: metaVal('subject'),
+    summary: metaVal('summary'), topics: csv(metaVal('topics')), content: b ? b[1] : '',
   };
 }
 
@@ -75,7 +79,12 @@ function readEntry(f) {
   if (hit && hit.key === key) return hit;
   const note = parse(f.slice(0, -5), fs.readFileSync(file, 'utf8'));
   const text = topics.htmlToText(note.content).trim();
-  const entry = { key, sum: summary(note), profile: topics.profile({ title: note.title, tags: note.tags, text }), text, tags: note.tags, folded: null };
+  const entry = {
+    key, sum: summary(note),
+    brief: note.summary || localSummary({ title: note.title, text }),
+    profile: topics.profile({ title: note.title, tags: note.tags, text: (note.summary ? note.summary + ' ' : '') + text, aiTopics: note.topics }),
+    text, tags: note.tags, folded: null,
+  };
   cache.set(f, entry);
   return entry;
 }
@@ -141,9 +150,27 @@ function search(query, { limit = 200 } = {}) {
     .slice(0, Math.max(1, Math.min(1000, limit | 0 || 200)));
 }
 
-function get(id) {
+function read(id) {
   try { return parse(id, fs.readFileSync(fileFor(id), 'utf8')); }
   catch (e) { throw e.code === 'ENOENT' ? new Error('Note not found') : e; }
+}
+
+// Note for the renderer. A note with no AI summary gets a local one, computed on the fly and not
+// saved, so editing the note keeps it current.
+function get(id) {
+  const note = read(id);
+  if (note.summary) return { ...note, summarySource: 'ai' };
+  const local = localSummary({ title: note.title, text: topics.htmlToText(note.content) });
+  return { ...note, summary: local, summarySource: local ? 'local' : '' };
+}
+
+// Plain text of a note, for the AI.
+function textOf(id) { const n = read(id); return { title: n.title, url: n.url, text: topics.htmlToText(n.content).trim() }; }
+
+// Every note's id, title, pinned subject and best available summary, for regrouping.
+function briefs() {
+  list();
+  return [...cache.values()].map((e) => ({ id: e.sum.id, title: e.sum.title, summary: e.brief, pinned: e.sum.pinnedSubject }));
 }
 
 const cleanTags = (tags) => [...new Set((Array.isArray(tags) ? tags : []).map((t) => String(t).replace(/[,\s]+/g, ' ').trim()).filter((t) => t && t.length <= 40))].slice(0, 12);
@@ -159,7 +186,7 @@ function create({ title, url, dateGathered, content, siteName, tags }) {
 }
 
 function save(id, { title, content } = {}) {
-  const cur = get(id);
+  const cur = read(id);
   const next = { ...cur, title: String(title ?? cur.title).trim() || 'Untitled', content: sanitize(content ?? cur.content) };
   writeAtomic(fileFor(id), render(next));
   return summary(next);
@@ -167,8 +194,19 @@ function save(id, { title, content } = {}) {
 
 // Pin a note to a subject by hand; an empty subject returns it to automatic organisation.
 function setSubject(id, subject) {
-  const cur = get(id);
+  const cur = read(id);
   const next = { ...cur, subject: String(subject || '').trim().replace(/\s+/g, ' ').slice(0, 60) };
+  writeAtomic(fileFor(id), render(next));
+  return summary(next);
+}
+
+// Store what the AI produced. Either field may be omitted to leave it as it is; an empty summary
+// clears it (the note falls back to the local summary).
+function setAi(id, { summary: text, topics: labels } = {}) {
+  const cur = read(id);
+  const next = { ...cur };
+  if (text !== undefined) next.summary = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+  if (labels !== undefined) next.topics = cleanTags(labels).slice(0, 3);
   writeAtomic(fileFor(id), render(next));
   return summary(next);
 }
@@ -179,4 +217,4 @@ function remove(id) {
   return true;
 }
 
-module.exports = { setDir, list, search, get, create, save, setSubject, remove, assetsRoot, assetDir };
+module.exports = { setDir, list, search, get, textOf, briefs, create, save, setSubject, setAi, remove, assetsRoot, assetDir };
