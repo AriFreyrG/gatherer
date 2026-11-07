@@ -35,3 +35,36 @@ test('list infers subjects, keeps metadata through saves, and honours pinned sub
   storage.remove(b.id);
   assert.strictEqual(storage.list().length, 2);
 });
+
+test('user tags are kept apart from page tags, survive saves, and can be renamed or merged', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gatherer-'));
+  storage.setDir(dir);
+  const a = storage.create({ title: 'A', url: 'https://a.example/', content: '<p>Alpha</p>', tags: ['page tag'] });
+  const b = storage.create({ title: 'B', url: 'https://b.example/', content: '<p>Beta</p>' });
+  assert.deepStrictEqual(storage.get(a.id).userTags, []);
+  const sum = storage.setTags(a.id, ['#Reading', 'reading', 'To Try', '  ', 'a,b']);
+  assert.deepStrictEqual(sum.userTags, ['Reading', 'To Try', 'a b']);
+  assert.deepStrictEqual(storage.get(a.id).tags, ['page tag']);
+  storage.save(a.id, { content: '<p>Alpha edited</p>' });
+  storage.setSubject(a.id, 'Letters');
+  assert.deepStrictEqual(storage.get(a.id).userTags, ['Reading', 'To Try', 'a b']);
+  storage.setTags(b.id, ['later']);
+  assert.strictEqual(storage.renameTag('reading', 'Later'), 1);
+  assert.deepStrictEqual(storage.get(a.id).userTags, ['Later', 'To Try', 'a b']);
+  storage.renameTag('later', 'later');
+  assert.deepStrictEqual(storage.get(a.id).userTags, ['later', 'To Try', 'a b']);
+  storage.renameTag('to try', '');
+  assert.deepStrictEqual(storage.get(a.id).userTags, ['later', 'a b']);
+  const l = storage.list();
+  assert.deepStrictEqual(l.find((n) => n.id === b.id).userTags, ['later']);
+});
+
+test('highlights are <mark> elements that survive sanitizing and show in the summary', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gatherer-'));
+  storage.setDir(dir);
+  const a = storage.create({ title: 'H', url: 'https://h.example/', content: '<p>One <mark>key idea</mark> here.</p>' });
+  const sum = storage.save(a.id, { content: '<p>One <mark class="flash">key <b>idea</b></mark> and <mark>another</mark>.</p><p><mark> </mark></p>' });
+  assert.deepStrictEqual(sum.highlights, ['key idea', 'another']);
+  assert.match(storage.get(a.id).content, /<mark>key <b>idea<\/b><\/mark>/);
+  assert.deepStrictEqual(storage.list()[0].highlights, ['key idea', 'another']);
+});
