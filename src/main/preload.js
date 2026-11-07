@@ -10,6 +10,9 @@
 //   notes.save(id, {title, content}) -> NoteSummary
 //   notes.setSubject(id, subject) -> NoteSummary  pin a subject; '' returns it to automatic
 //   notes.delete(id)         -> true
+//   capture.listen(fn)       -> Promise<{ bookmarklet }>  fn({ url, title }) is called for each page
+//                               sent from the browser (gatherer://add?url=…), including ones that
+//                               arrived before the window loaded
 //
 // Failures reject with an Error whose message is shown to the user.
 const { contextBridge, ipcRenderer } = require('electron');
@@ -22,6 +25,12 @@ contextBridge.exposeInMainWorld('gatherer', {
     save: (id, data) => ipcRenderer.invoke('notes:save', id, data),
     setSubject: (id, subject) => ipcRenderer.invoke('notes:setSubject', id, subject),
     delete: (id) => ipcRenderer.invoke('notes:delete', id),
+  },
+  capture: {
+    listen: (fn) => {
+      ipcRenderer.on('capture:page', (_e, item) => fn(item));
+      return ipcRenderer.invoke('capture:ready');
+    },
   },
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   // Main asks the renderer to save pending edits before the window closes.

@@ -4,8 +4,56 @@ const path = require('path');
 const storage = require('./storage');
 const { scrape, normalizeUrl } = require('./scraper');
 const images = require('./images');
+const capture = require('./capture');
 
 protocol.registerSchemesAsPrivileged([{ scheme: images.SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+
+/* ---------- one-click capture (gatherer:// links) ---------- */
+// The Mac App Store build gets the scheme from Info.plist (electron-builder "protocols").
+// Other builds, and `npm start`, register it at run time.
+if (process.defaultApp) {
+  if (process.argv.length >= 2) app.setAsDefaultProtocolClient(capture.SCHEME, process.execPath, [path.resolve(process.argv[1])]);
+} else if (!process.mas) {
+  app.setAsDefaultProtocolClient(capture.SCHEME);
+}
+
+// Windows and Linux start a second copy of the app for each link; hand it to the first one.
+// macOS (including the sandboxed MAS build) delivers links through 'open-url' instead.
+const isSecondInstance = process.platform !== 'darwin' && !app.requestSingleInstanceLock();
+if (isSecondInstance) app.quit();
+
+let mainWin = null;
+let rendererReady = false;
+const pendingCaptures = [];
+const recentCaptures = new Map(); // url -> time, to ignore double clicks
+
+function deliverCaptures() {
+  if (!rendererReady || !mainWin || mainWin.isDestroyed()) return;
+  while (pendingCaptures.length) mainWin.webContents.send('capture:page', pendingCaptures.shift());
+}
+
+function receiveCaptureLink(raw) {
+  const item = capture.parseCaptureLink(raw);
+  if (!item) { console.warn('[capture] ignored link:', String(raw).slice(0, 200)); return; }
+  const now = Date.now();
+  for (const [u, t] of recentCaptures) if (now - t > 5000) recentCaptures.delete(u);
+  if (recentCaptures.has(item.url)) return;
+  recentCaptures.set(item.url, now);
+  pendingCaptures.push(item);
+  if (app.isReady()) {
+    if (!mainWin || mainWin.isDestroyed()) createWindow();
+    else { if (mainWin.isMinimized()) mainWin.restore(); mainWin.show(); mainWin.focus(); }
+  }
+  deliverCaptures();
+}
+
+app.on('open-url', (e, url) => { e.preventDefault(); receiveCaptureLink(url); });
+app.on('second-instance', (_e, argv) => {
+  const links = capture.linksFromArgv(argv);
+  links.forEach(receiveCaptureLink);
+  if (!links.length && mainWin && !mainWin.isDestroyed()) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.focus(); }
+});
+if (!isSecondInstance) capture.linksFromArgv(process.argv).forEach(receiveCaptureLink);
 
 let quitting = false;
 app.on('before-quit', () => { quitting = true; });
@@ -20,6 +68,10 @@ function createWindow() {
       contextIsolation: true, nodeIntegration: false, sandbox: true,
     },
   });
+  mainWin = win;
+  rendererReady = false;
+  win.webContents.on('did-start-loading', () => { if (mainWin === win) rendererReady = false; });
+  win.on('closed', () => { if (mainWin === win) { mainWin = null; rendererReady = false; } });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (isHttp(url)) shell.openExternal(url);
@@ -52,6 +104,7 @@ const handle = (channel, fn) => ipcMain.handle(channel, async (_e, ...args) => {
 });
 
 app.whenReady().then(() => {
+  if (isSecondInstance) return;
   protocol.handle(images.SCHEME, (req) => {
     const file = images.resolveAsset(req.url, storage.assetsRoot());
     if (!file) return new Response('Not found', { status: 404 });
@@ -72,6 +125,11 @@ app.whenReady().then(() => {
   handle('notes:save', (id, data) => storage.save(id, data));
   handle('notes:setSubject', (id, subject) => storage.setSubject(id, subject));
   handle('notes:delete', (id) => storage.remove(id));
+  // The renderer is listening for captured pages; send any that arrived before it loaded.
+  ipcMain.handle('capture:ready', (e) => {
+    if (mainWin && e.sender === mainWin.webContents) { rendererReady = true; setImmediate(deliverCaptures); }
+    return { bookmarklet: capture.BOOKMARKLET };
+  });
   handle('app:openExternal', async (url) => {
     if (!isHttp(url)) throw new Error('Only http and https links can be opened');
     await shell.openExternal(url);

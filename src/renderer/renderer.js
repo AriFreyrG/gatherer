@@ -12,6 +12,7 @@
     delBtn: $('delete-btn'), delConfirm: $('delete-confirm'),
     organize: $('organize'), chip: $('subject-chip'), subjForm: $('subject-form'),
     subjInput: $('subject-input'), subjOptions: $('subject-options'),
+    copyBm: $('copy-bookmarklet'),
   };
 
   let notes = [];
@@ -415,11 +416,11 @@
   el.cancel.addEventListener('click', closeModal);
   el.modal.addEventListener('mousedown', (e) => { if (e.target === el.modal) closeModal(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el.modal.hidden) closeModal(); });
-  el.form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    let u = el.urlInput.value.trim();
-    if (!u || busy) return;
+  // Gather a page through the modal so progress and errors show in one place.
+  async function gather(u) {
+    if (busy) return false;
     if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) u = 'https://' + u;
+    el.modal.hidden = false; el.urlInput.value = u;
     busy = true; el.err.hidden = true; el.busy.hidden = false;
     el.urlInput.disabled = el.go.disabled = true;
     try {
@@ -428,12 +429,74 @@
       busy = false; el.modal.hidden = true;
       await refreshList();
       await openNote(note.id);
+      return true;
     } catch (err) {
       busy = false;
       el.busy.hidden = true; el.urlInput.disabled = el.go.disabled = false;
       el.err.textContent = String((err && err.message) || err).replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
       el.err.hidden = false; el.urlInput.focus();
+      return false;
+    } finally {
+      setTimeout(nextCapture, 0);
     }
+  }
+  el.form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const u = el.urlInput.value.trim();
+    if (u) gather(u);
+  });
+
+  /* ---------- one-click capture ---------- */
+  // Pages arrive from the browser extension or bookmarklet (gatherer://add?url=…),
+  // or by dropping a link from a browser onto the window.
+  const captureQueue = [];
+  const sameUrl = (a, b) => { try { return new URL(a).href === new URL(b).href; } catch { return a === b; } };
+  function captureUrl(url) {
+    if (!url || captureQueue.some((u) => sameUrl(u, url))) return;
+    captureQueue.push(url);
+    nextCapture();
+  }
+  async function nextCapture() {
+    if (busy || !captureQueue.length) return;
+    const url = captureQueue.shift();
+    const existing = notes.find((n) => sameUrl(n.url, url));
+    if (existing) {
+      el.modal.hidden = true;
+      await openNote(existing.id);
+      setStatus('Already gathered');
+      nextCapture();
+      return;
+    }
+    gather(url);
+  }
+
+  const droppedUrl = (dt) => {
+    const list = (dt.getData('text/uri-list') || '').split(/\r?\n/).find((l) => l && !l.startsWith('#'));
+    const raw = (list || dt.getData('text/plain') || '').trim();
+    return /^https?:\/\/\S+$/i.test(raw) ? raw : null;
+  };
+  const isLinkDrag = (e) => !dragId && !el.editor.contains(e.target) && !e.target.closest('input, [contenteditable="true"]')
+    && [...e.dataTransfer.types].includes('text/uri-list');
+  document.addEventListener('dragover', (e) => {
+    if (!isLinkDrag(e)) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+    document.body.classList.add('link-drop');
+  });
+  document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('link-drop'); });
+  document.addEventListener('drop', (e) => {
+    document.body.classList.remove('link-drop');
+    if (!isLinkDrag(e)) return;
+    e.preventDefault();
+    const url = droppedUrl(e.dataTransfer);
+    if (url) captureUrl(url);
+  });
+
+  let bookmarklet = '';
+  el.copyBm.addEventListener('click', async () => {
+    if (!bookmarklet) return;
+    try { await navigator.clipboard.writeText(bookmarklet); el.copyBm.textContent = 'Copied'; }
+    catch { el.copyBm.textContent = 'Could not copy'; }
+    setTimeout(() => { el.copyBm.textContent = 'Copy bookmarklet'; }, 2000);
   });
 
   /* ---------- lifecycle ---------- */
@@ -445,5 +508,9 @@
     setMode(prefs.mode);
     try { await refreshList(); } catch (e) { el.listEmpty.textContent = String(e.message || e); el.listEmpty.hidden = false; }
     if (notes.length) openNote(notes[0].id); else showEmpty();
+    try {
+      const info = await api.capture.listen((item) => captureUrl(item && item.url));
+      bookmarklet = (info && info.bookmarklet) || '';
+    } catch (e) { console.warn('capture unavailable', e); }
   })();
 })();

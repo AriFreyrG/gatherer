@@ -33,6 +33,14 @@
       "src/**/*",
       "package.json"
     ],
+    "protocols": [
+      {
+        "name": "Gatherer capture link",
+        "schemes": [
+          "gatherer"
+        ]
+      }
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
