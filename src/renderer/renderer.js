@@ -436,6 +436,119 @@
     }
   });
 
+  /* ---------- toast ---------- */
+  let toastTimer = null;
+  function toast(text, revealPath) {
+    $('toast-text').textContent = text;
+    const act = $('toast-action');
+    act.hidden = !revealPath;
+    act.onclick = () => { api.exports.reveal(revealPath); $('toast').hidden = true; };
+    $('toast').hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 6000);
+  }
+  const errText = (e) => String((e && e.message) || e).replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
+
+  /* ---------- export ---------- */
+  const exportBtn = $('export-btn');
+  const exportMenu = $('export-menu');
+  function showExportMenu(open) { exportMenu.hidden = !open; exportBtn.setAttribute('aria-expanded', String(open)); }
+  exportBtn.addEventListener('click', () => showExportMenu(exportMenu.hidden));
+  document.addEventListener('mousedown', (e) => { if (!exportMenu.hidden && !e.target.closest('#export-wrap')) showExportMenu(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !exportMenu.hidden) showExportMenu(false); });
+  exportMenu.addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-format]');
+    if (!b || !current) return;
+    showExportMenu(false);
+    const label = b.dataset.format === 'pdf' ? 'PDF' : 'Markdown';
+    try {
+      await flush();
+      const res = await api.exports.note(current.id, b.dataset.format);
+      if (res) toast(`Exported as ${label}.`, res.path);
+    } catch (err) { toast(`Export failed: ${errText(err)}`); }
+  });
+  $('export-all-btn').addEventListener('click', async () => {
+    try {
+      await flush();
+      const res = await api.exports.all();
+      if (res) toast(`Exported ${res.count} ${res.count === 1 ? 'note' : 'notes'} as Markdown.`, res.path);
+    } catch (err) { toast(`Export failed: ${errText(err)}`); }
+  });
+
+  /* ---------- sync ---------- */
+  let syncStatus = { enabled: false };
+  const ago = (iso) => {
+    const s = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (!iso || isNaN(s)) return 'not yet';
+    if (s < 45) return 'just now';
+    if (s < 3600) return `${Math.round(s / 60)} min ago`;
+    return fmtDate(iso, { dateStyle: 'short', timeStyle: 'short' });
+  };
+  function renderSync(st) {
+    if (st) syncStatus = st;
+    const s = syncStatus;
+    const btn = $('sync-btn');
+    btn.classList.toggle('on', !!s.enabled && !s.error);
+    btn.classList.toggle('busy', !!s.syncing);
+    btn.classList.toggle('err', !!s.enabled && !!s.error);
+    $('sync-label').textContent = !s.enabled ? 'iCloud sync is off'
+      : s.error ? 'Sync needs attention'
+      : s.syncing ? 'Syncing…'
+      : `Synced ${ago(s.lastSync)}`;
+    btn.title = s.enabled ? `Syncing with ${s.folder}` : 'Sync notes across your Macs with iCloud Drive';
+    // Dialog
+    $('sync-intro').hidden = !!s.enabled;
+    $('sync-info').hidden = !s.enabled;
+    $('sync-folder').textContent = s.folder || '';
+    $('sync-when').textContent = s.syncing ? 'Syncing now…' : ago(s.lastSync);
+    const notes = [];
+    if (s.enabled && s.pending) notes.push(`${s.pending} ${s.pending === 1 ? 'file is' : 'files are'} still downloading from iCloud.`);
+    if (s.enabled && s.conflicts) notes.push(`${s.conflicts} ${s.conflicts === 1 ? 'note was' : 'notes were'} edited on two Macs at once. Gatherer kept both versions; look for “(conflicted copy)”.`);
+    $('sync-note').textContent = notes.join(' ');
+    $('sync-note').hidden = !notes.length;
+    $('sync-error').textContent = s.error || '';
+    $('sync-error').hidden = !s.error;
+    $('sync-off').hidden = !s.enabled;
+    $('sync-now').hidden = !s.enabled;
+    $('sync-now').disabled = !!s.syncing;
+    $('sync-choose').textContent = s.enabled ? 'Change folder…' : 'Choose folder…';
+    $('sync-choose').classList.toggle('primary', !s.enabled);
+  }
+  const syncModal = $('sync-modal');
+  const syncAction = (fn) => async () => { try { renderSync(await fn()); } catch (err) { renderSync({ ...syncStatus, error: errText(err) }); } };
+  $('sync-btn').addEventListener('click', () => { renderSync(); syncModal.hidden = false; $('sync-close').focus(); });
+  $('sync-close').addEventListener('click', () => { syncModal.hidden = true; });
+  syncModal.addEventListener('mousedown', (e) => { if (e.target === syncModal) syncModal.hidden = true; });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !syncModal.hidden) syncModal.hidden = true; });
+  $('sync-choose').addEventListener('click', syncAction(() => flush().then(() => api.sync.choose())));
+  $('sync-now').addEventListener('click', syncAction(() => flush().then(() => api.sync.now())));
+  $('sync-off').addEventListener('click', syncAction(() => api.sync.disable()));
+  api.sync.onStatus(renderSync);
+  setInterval(() => renderSync(), 30000); // keep "Synced n min ago" fresh
+
+  // Sync brought in new or changed notes: refresh the list, and the open note if it's untouched here.
+  api.onNotesChanged(async (ids) => {
+    try { await refreshList(); } catch { return; }
+    if (!current) { if (notes.length) openNote(notes[0].id); return; }
+    if (!notes.some((n) => n.id === current.id)) {
+      if (dirty) return; // deleted elsewhere while being edited here; the next save brings it back
+      current = null;
+      if (notes.length) openNote(notes[0].id); else showEmpty();
+      return;
+    }
+    if (ids.includes(current.id) && !dirty) {
+      const scroller = $('scroller');
+      const top = scroller.scrollTop;
+      try {
+        const note = await api.notes.get(current.id);
+        if (dirty) return;
+        current = note;
+        el.title.textContent = note.title || '';
+        el.editor.innerHTML = note.content || '';
+        scroller.scrollTop = top;
+      } catch {}
+    }
+  });
+
   /* ---------- lifecycle ---------- */
   window.addEventListener('beforeunload', () => { flush(); });
   api.onFlushRequest(() => flush());
@@ -443,6 +556,7 @@
 
   (async () => {
     setMode(prefs.mode);
+    api.sync.status().then(renderSync, () => {});
     try { await refreshList(); } catch (e) { el.listEmpty.textContent = String(e.message || e); el.listEmpty.hidden = false; }
     if (notes.length) openNote(notes[0].id); else showEmpty();
   })();

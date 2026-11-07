@@ -103,3 +103,29 @@ article { max-width: 720px; margin: 0 auto; }
 .error { color: var(--danger); font-size: 13px; }
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+#export-wrap { position: relative; margin-right: 4px; }
+#export-menu { position: absolute; right: 0; top: 100%; margin-top: 4px; display: flex; flex-direction: column; min-width: 140px; padding: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.2); z-index: 10; }
+#export-menu button { text-align: left; padding: 6px 10px; }
+
+#sidebar-foot { display: flex; gap: 4px; align-items: center; border-top: 1px solid var(--border); padding-top: 8px; margin: 0 -4px; }
+#sidebar-foot button { font-size: 12px; color: var(--muted); padding: 5px 6px; }
+#sidebar-foot button:hover { color: var(--fg); }
+#sync-btn { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left; }
+#sync-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sync-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--border); }
+#sync-btn.on #sync-dot { background: #2fb344; }
+#sync-btn.busy #sync-dot { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+#sync-btn.err #sync-dot { background: var(--danger); }
+@keyframes pulse { 50% { opacity: .3; } }
+
+#sync-modal p { margin: 0; line-height: 1.5; }
+#sync-info { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+#sync-info dt { color: var(--muted); }
+#sync-info dd { margin: 0; word-break: break-all; }
+#sync-note { font-size: 13px; }
+.dialog .actions .spacer { flex: 1; }
+
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 30; display: flex; align-items: center; gap: 10px; max-width: 80vw; padding: 8px 10px 8px 14px; background: var(--fg); color: var(--bg); border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,.25); font-size: 13px; }
+#toast button { color: var(--bg); border: 1px solid currentColor; padding: 2px 8px; font-size: 12px; }
+#toast button:hover { background: rgba(127,127,127,.25); }
