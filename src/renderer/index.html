@@ -12,11 +12,12 @@
   <aside id="sidebar">
     <div class="brand">Gatherer</div>
     <button id="new-btn" class="primary">+ New note</button>
-    <input id="filter" type="search" placeholder="Filter notes…" autocomplete="off">
+    <input id="filter" type="search" placeholder="Filter notes or #tag…" autocomplete="off">
     <div id="organize" role="radiogroup" aria-label="Organize notes by">
       <button role="radio" data-mode="subject" title="Group notes by what they are about">Subject</button>
       <button role="radio" data-mode="source" title="Group notes by the site they came from">Source</button>
       <button role="radio" data-mode="date" title="Group notes by when you gathered them">Date</button>
+      <button role="radio" data-mode="tag" title="Group notes by your own tags">Tags</button>
     </div>
     <ul id="list"></ul>
     <div id="list-empty" class="muted" hidden>No notes yet.</div>
@@ -42,6 +43,7 @@
         <button data-cmd="italic" title="Italic (Cmd/Ctrl+I)"><i>I</i></button>
         <button data-cmd="underline" title="Underline (Cmd/Ctrl+U)"><u>U</u></button>
         <button data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+        <button data-act="highlight" id="hl-btn" title="Highlight (Cmd/Ctrl+Shift+H)"><span class="hl-icon">H</span></button>
         <span class="sep"></span>
         <button data-cmd="insertUnorderedList" title="Bullet list">&#8226;&#8801;</button>
         <button data-cmd="insertOrderedList" title="Numbered list">1.&#8801;</button>
@@ -84,7 +86,17 @@
                 <datalist id="subject-options"></datalist>
               </form>
             </span>
+            <span id="hl-wrap" hidden>Highlights:
+              <button id="hl-count" type="button" title="Show highlights" aria-expanded="false"></button>
+            </span>
+            <div id="tags-row">
+              <span class="label">Tags:</span>
+              <span id="tag-list"></span>
+              <input id="tag-input" type="text" list="tag-options" placeholder="Add tag…" autocomplete="off" spellcheck="false" maxlength="40" aria-label="Add tag">
+              <datalist id="tag-options"></datalist>
+            </div>
           </div>
+          <ol id="hl-panel" hidden></ol>
           <div id="editor" contenteditable="true" spellcheck="true"></div>
         </article>
       </div>
@@ -104,6 +116,8 @@
     </div>
   </form>
 </div>
+
+<div id="hl-bubble" hidden><button type="button" id="hl-bubble-btn">Highlight</button></div>
 
 <script src="renderer.js"></script>
 </body>
