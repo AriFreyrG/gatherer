@@ -22,6 +22,9 @@
 //   notes.setTags(id, tags)  -> NoteSummary  replace the user's tags on a note
 //   tags.rename(from, to)    -> number         rename/merge a tag on every note; '' removes it
 //   notes.delete(id)         -> true
+//   capture.listen(fn)       -> Promise<{ bookmarklet }>  fn({ url, title }) is called for each page
+//                               sent from the browser (gatherer://add?url=…), including ones that
+//                               arrived before the window loaded
 //   notes.aiBusy()           -> id[]           notes whose AI summary is being written
 //   ai.summarize(id)         -> Note           (re)write the AI summary and subject labels
 //   ai.organize()            -> NoteSummary[]  regroup all automatic notes by meaning
@@ -44,6 +47,12 @@ contextBridge.exposeInMainWorld('gatherer', {
     setTags: (id, tags) => ipcRenderer.invoke('notes:setTags', id, tags),
     delete: (id) => ipcRenderer.invoke('notes:delete', id),
     aiBusy: () => ipcRenderer.invoke('notes:aiBusy'),
+  },
+  capture: {
+    listen: (fn) => {
+      ipcRenderer.on('capture:page', (_e, item) => fn(item));
+      return ipcRenderer.invoke('capture:ready');
+    },
   },
   tags: {
     rename: (from, to) => ipcRenderer.invoke('tags:rename', from, to),

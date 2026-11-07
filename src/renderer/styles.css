@@ -123,6 +123,12 @@ article { max-width: 720px; margin: 0 auto; }
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* one-click capture */
+.capture-tip { font-size: 12px; margin: 0; line-height: 1.5; }
+.link-btn { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+body.link-drop::after { content: 'Drop to gather this page'; position: fixed; inset: 12px; display: flex; align-items: center; justify-content: center;
+  border: 2px dashed var(--accent); border-radius: 12px; background: color-mix(in srgb, var(--bg) 80%, transparent);
+  font-size: 18px; pointer-events: none; z-index: 100; }
 /* tags */
 #list .tg { font-size: 11px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 #list li.group input.rename { width: 100%; font-size: 12px; padding: 3px 6px; }
