@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { sanitize } = require('./scraper');
 const topics = require('./topics');
+const { FILE: ARCHIVE_FILE } = require('./archive');
 const { localSummary } = require('./summarize');
 const match = require('../renderer/search-core');
 
@@ -126,6 +127,22 @@ function list() {
     .sort((a, b) => (b.dateGathered || '').localeCompare(a.dateGathered || ''));
 }
 
+// Every note keeps a full offline copy of the original page next to its images.
+const archiveFile = (id) => path.join(assetDir(id), ARCHIVE_FILE);
+
+// { savedAt, bytes } for the note's offline copy, or null if it has none.
+function archiveInfo(id) {
+  try { const st = fs.statSync(archiveFile(id)); return { savedAt: st.mtime.toISOString(), bytes: st.size }; }
+  catch { return null; }
+}
+
+function saveArchive(id, html) {
+  fileFor(id);
+  fs.mkdirSync(assetDir(id), { recursive: true });
+  writeAtomic(archiveFile(id), html);
+  return archiveInfo(id);
+}
+
 // Full-text search over every note's title, body, tags, site and URL. Every word of the query
 // must appear somewhere in the note. -> SearchResult[] best first, at most `limit`.
 function search(query, { limit = 200 } = {}) {
@@ -175,7 +192,7 @@ function read(id) {
 // Note for the renderer. A note with no AI summary gets a local one, computed on the fly and not
 // saved, so editing the note keeps it current.
 function get(id) {
-  const note = read(id);
+  const note = { ...read(id), archive: archiveInfo(id) };
   if (note.summary) return { ...note, summarySource: 'ai' };
   const local = localSummary({ title: note.title, text: topics.htmlToText(note.content) });
   return { ...note, summary: local, summarySource: local ? 'local' : '' };
@@ -295,4 +312,4 @@ function importNote(srcDir, file) {
   return id;
 }
 
-module.exports = { setDir, getDir, list, search, get, textOf, briefs, create, save, setSubject, setTags, renameTag, setAi, remove, importNote, assetsRoot, assetDir };
+module.exports = { setDir, getDir, list, search, get, textOf, briefs, create, save, setSubject, setTags, renameTag, setAi, remove, importNote, assetsRoot, assetDir, saveArchive, archiveInfo };

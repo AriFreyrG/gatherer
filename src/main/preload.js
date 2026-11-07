@@ -3,9 +3,11 @@
 //   NoteSummary = { id, title, url, dateGathered, siteName, subject, pinnedSubject, userTags, highlights }
 //                 (dateGathered: ISO 8601; subject: inferred or pinned; pinnedSubject: '' when automatic;
 //                  userTags: the user's own tags; highlights: text of each <mark> in the body)
-//   Note        = { id, title, url, dateGathered, siteName, tags, userTags, subject, content, summary, summarySource, topics }
+//   Note        = { id, title, url, dateGathered, siteName, tags, userTags, subject, content, archive, summary, summarySource, topics }
 //                 (tags: from the page, not shown; content: sanitized HTML body, highlights are <mark>;
+//                  archive: { savedAt, bytes } or null when there is no offline copy;
 //                  summarySource: 'ai' | 'local' | ''; topics: AI subject labels)
+//   The offline copy of a note is served at gatherer-asset://<id>/page.html (scripts and network blocked).
 //   Settings    = { hasKey, keySource: 'settings'|'environment'|'', keyHint, autoSummarize }
 //
 //   notes.list()             -> NoteSummary[]  newest first
@@ -16,6 +18,7 @@
 //   notes.create(url)        -> Note           scrapes url, saves, returns new note
 //   notes.save(id, {title, content}) -> NoteSummary
 //   notes.setSubject(id, subject) -> NoteSummary  pin a subject; '' returns it to automatic
+//   notes.archive(id)        -> Note           fetches the source again and saves a fresh offline copy
 //   notes.setTags(id, tags)  -> NoteSummary  replace the user's tags on a note
 //   tags.rename(from, to)    -> number         rename/merge a tag on every note; '' removes it
 //   notes.delete(id)         -> true
@@ -37,6 +40,7 @@ contextBridge.exposeInMainWorld('gatherer', {
     create: (url) => ipcRenderer.invoke('notes:create', url),
     save: (id, data) => ipcRenderer.invoke('notes:save', id, data),
     setSubject: (id, subject) => ipcRenderer.invoke('notes:setSubject', id, subject),
+    archive: (id) => ipcRenderer.invoke('notes:archive', id),
     setTags: (id, tags) => ipcRenderer.invoke('notes:setTags', id, tags),
     delete: (id) => ipcRenderer.invoke('notes:delete', id),
     aiBusy: () => ipcRenderer.invoke('notes:aiBusy'),
@@ -53,7 +57,7 @@ contextBridge.exposeInMainWorld('gatherer', {
     setKey: (key) => ipcRenderer.invoke('settings:setKey', key),
     setAutoSummarize: (on) => ipcRenderer.invoke('settings:setAutoSummarize', on),
   },
-  onNoteChanged: (fn) => ipcRenderer.on('notes:changed', (_e, p) => fn(p)),
+  onNoteChanged: (fn) => ipcRenderer.on('notes:changed', (_e, p) => fn(p || {})),
   onAiStatus: (fn) => ipcRenderer.on('ai:status', (_e, p) => fn(p)),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   // Main tells the renderer when notes changed outside it (e.g. after File > Import Notes).
