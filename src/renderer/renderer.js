@@ -15,6 +15,12 @@
     tagList: $('tag-list'), tagInput: $('tag-input'), tagOptions: $('tag-options'),
     hlWrap: $('hl-wrap'), hlCount: $('hl-count'), hlPanel: $('hl-panel'),
     bubble: $('hl-bubble'), bubbleBtn: $('hl-bubble-btn'), hlBtn: $('hl-btn'),
+    summary: $('summary'), sumText: $('summary-text'), sumBadge: $('summary-badge'),
+    sumBtn: $('summary-btn'), sumStatus: $('summary-status'),
+    regroup: $('regroup-btn'), regroupStatus: $('regroup-status'),
+    settings: $('settings'), setForm: $('settings-form'), keyInput: $('key-input'),
+    keyCurrent: $('key-current'), keyRemove: $('key-remove'), autoSum: $('auto-summarize'), setMsg: $('settings-msg'),
+    searchCount: $('search-count'), scroller: $('scroller'),
   };
 
   let notes = [];
@@ -23,6 +29,159 @@
   let timer = null;
   let saving = Promise.resolve();
   let savedRange = null;
+  let settings = { hasKey: false, keySource: '', keyHint: '', autoSummarize: true };
+  const aiBusy = new Set(); // note ids whose AI summary is being written
+  const aiErrors = new Map(); // id -> last error message
+  const cleanErr = (e) => String((e && e.message) || e).replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
+
+  /* ---------- search ---------- */
+  // Typing in the sidebar box searches the full text of every note (in the main process).
+  // Matches in the open note are painted with the CSS Custom Highlight API, which never
+  // touches the editor's DOM, so highlights can't leak into saved notes.
+  const S = window.GathererSearch;
+  const canHighlight = typeof CSS !== 'undefined' && !!CSS.highlights && typeof Highlight === 'function';
+  let results = null; // SearchResult[] for `resultsFor`, or null when not searching
+  let resultsFor = '';
+  let searchSeq = 0;
+  let searchTimer = null;
+  let matchRanges = []; // Range[] of matches in the open note's title and body
+  let matchIdx = -1;
+  const query = () => el.filter.value.trim();
+  // The box takes "#tag" words, which keep only notes with that tag, and text, which is searched.
+  function parsedQuery() {
+    const words = query().split(/\s+/).filter(Boolean);
+    return {
+      text: words.filter((w) => !(w.startsWith('#') && w.length > 1)).join(' '),
+      tagWords: words.filter((w) => w.startsWith('#') && w.length > 1).map((w) => w.slice(1).toLowerCase()),
+    };
+  }
+  const textQuery = () => parsedQuery().text;
+  const hasTags = (n, tagWords) => {
+    const tags = ((n && n.userTags) || []).map((t) => t.toLowerCase());
+    return tagWords.every((w) => tags.some((t) => t === w || t.replace(/\s+/g, '-') === w));
+  };
+
+  function scheduleSearch(delay = 120) { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, delay); }
+  async function runSearch() {
+    clearTimeout(searchTimer);
+    const q = query();
+    const seq = ++searchSeq;
+    const changed = q !== resultsFor;
+    const text = textQuery();
+    let r = null;
+    if (text) { try { r = await api.notes.search(text); } catch { r = []; } }
+    if (seq !== searchSeq) return; // a newer search is on its way
+    results = r; resultsFor = q;
+    renderList();
+    if (changed) { el.list.scrollTop = 0; highlightNote(); }
+  }
+
+  // Title and snippet text with <mark>s around the given [start, end] ranges.
+  function marked(text, ranges) {
+    const frag = document.createDocumentFragment();
+    let pos = 0;
+    for (const [a, b] of ranges || []) {
+      if (a < pos || b > text.length) continue;
+      if (a > pos) frag.append(text.slice(pos, a));
+      const m = document.createElement('mark'); m.textContent = text.slice(a, b); frag.append(m);
+      pos = b;
+    }
+    frag.append(text.slice(pos));
+    return frag;
+  }
+
+  function renderResults() {
+    el.list.textContent = '';
+    const { tagWords } = parsedQuery();
+    const shown = results.filter((r) => hasTags(r, tagWords));
+    if (shown.length) {
+      const head = document.createElement('li');
+      head.className = 'result-head';
+      head.textContent = shown.length === 1 ? '1 note' : `${shown.length} notes`;
+      el.list.appendChild(head);
+    }
+    for (const r of shown) {
+      const li = document.createElement('li');
+      li.className = 'note result'; li.dataset.id = r.id;
+      if (current && current.id === r.id) li.classList.add('selected');
+      const t = document.createElement('div'); t.className = 't'; t.append(marked(r.title || 'Untitled', r.title ? r.titleRanges : []));
+      const s = document.createElement('div'); s.className = 's';
+      const a = document.createElement('span'); a.textContent = r.siteName || host(r.url);
+      const b = document.createElement('span');
+      b.textContent = r.hits > 1 ? `${r.hits >= 50 ? '50+' : r.hits} matches` : fmtDate(r.dateGathered, { dateStyle: 'short' });
+      s.append(a, b);
+      li.append(t, s);
+      if (r.snippet) { const p = document.createElement('div'); p.className = 'snip'; p.append(marked(r.snippet, r.snippetRanges)); li.appendChild(p); }
+      el.list.appendChild(li);
+    }
+    el.listEmpty.hidden = shown.length > 0;
+    el.listEmpty.textContent = !notes.length ? 'No notes yet.'
+      : tagWords.length ? `No notes tagged ${tagWords.map((w) => '#' + w).join(' ')} contain “${textQuery()}”.`
+      : `No notes contain “${resultsFor}”.`;
+    renderSubjectChip();
+    renderTags();
+  }
+
+  function textNodes(root) {
+    const out = [];
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) out.push(n);
+    return out;
+  }
+
+  // Find every match in the open note. `jump` scrolls to the first one.
+  function highlightNote({ jump = false } = {}) {
+    matchRanges = []; matchIdx = -1;
+    const terms = current && !el.view.hidden ? S.parseQuery(textQuery()) : [];
+    for (const root of terms.length ? [el.title, el.editor] : []) {
+      // Join the text nodes so a match can span formatting, e.g. "gather <b>pages</b>".
+      const nodes = textNodes(root);
+      const starts = [];
+      let text = '';
+      for (const n of nodes) { starts.push(text.length); text += n.data; }
+      let i = 0;
+      for (const [a, b] of S.findRanges(S.fold(text), terms, 2000)) {
+        while (i + 1 < nodes.length && starts[i + 1] <= a) i++;
+        let j = i;
+        while (j + 1 < nodes.length && starts[j + 1] < b) j++;
+        const r = document.createRange();
+        r.setStart(nodes[i], a - starts[i]); r.setEnd(nodes[j], b - starts[j]);
+        matchRanges.push(r);
+      }
+    }
+    if (canHighlight) {
+      CSS.highlights.delete('gatherer-current');
+      if (matchRanges.length) CSS.highlights.set('gatherer-search', new Highlight(...matchRanges));
+      else CSS.highlights.delete('gatherer-search');
+    }
+    if (jump && matchRanges.length) gotoMatch(0); else updateCount();
+  }
+
+  function gotoMatch(i) {
+    const n = matchRanges.length;
+    if (!n) return;
+    matchIdx = ((i % n) + n) % n;
+    const r = matchRanges[matchIdx];
+    if (canHighlight) CSS.highlights.set('gatherer-current', new Highlight(r));
+    const box = r.getBoundingClientRect();
+    const view = el.scroller.getBoundingClientRect();
+    if (box.top < view.top + 40 || box.bottom > view.bottom - 40) el.scroller.scrollTop += box.top - view.top - view.height / 3;
+    updateCount();
+  }
+
+  function updateCount() {
+    const n = matchRanges.length;
+    el.searchCount.hidden = !textQuery() || !current || el.view.hidden;
+    el.searchCount.textContent = !n ? '0' : matchIdx >= 0 ? `${matchIdx + 1}/${n}` : String(n);
+    el.searchCount.title = n ? `${n} match${n === 1 ? '' : 'es'} in this note. Enter or Cmd/Ctrl+G for the next, Shift for the previous.` : 'No matches in this note';
+  }
+
+  let rehighlightTimer = null;
+  const rehighlightSoon = () => {
+    if (!textQuery()) return;
+    clearTimeout(rehighlightTimer);
+    rehighlightTimer = setTimeout(() => { const keep = matchIdx; highlightNote(); if (keep >= 0 && matchRanges.length) { matchIdx = Math.min(keep, matchRanges.length - 1); if (canHighlight) CSS.highlights.set('gatherer-current', new Highlight(matchRanges[matchIdx])); updateCount(); } }, 400);
+  };
 
   const fmtDate = (iso, opts) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString(undefined, opts); };
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u || ''; } };
@@ -107,6 +266,7 @@
 
   function setMode(mode) {
     prefs.mode = mode; savePrefs();
+    renderRegroup();
     el.organize.querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === mode)));
     renderList();
     const sel = el.list.querySelector('li.note.selected');
@@ -139,21 +299,18 @@
   }
 
   function renderList() {
-    const q = el.filter.value.trim().toLowerCase();
-    // "#tag" words must match one of the note's tags; other words match title, source, subject, tags or highlights.
-    const words = q.split(/\s+/).filter(Boolean);
-    const tagWords = words.filter((w) => w.startsWith('#') && w.length > 1).map((w) => w.slice(1));
-    const text = words.filter((w) => !w.startsWith('#')).join(' ');
-    const match = (n) => {
-      const tags = (n.userTags || []).map((t) => t.toLowerCase());
-      if (!tagWords.every((w) => tags.some((t) => t === w || t.replace(/\s+/g, '-') === w))) return false;
-      return !text || [n.title, n.url, n.siteName, n.subject, ...(n.userTags || []), ...(n.highlights || [])].some((v) => (v || '').toLowerCase().includes(text));
-    };
+    const { text, tagWords } = parsedQuery();
+    if (text && results) return renderResults();
+    // "#tag" words must match one of the note's tags. Other words are searched in full text in the
+    // main process; while those results are on their way, match title, source, subject, tags or highlights.
+    const q = text.toLowerCase();
+    const match = (n) => hasTags(n, tagWords) &&
+      (!q || [n.title, n.url, n.siteName, n.subject, ...(n.userTags || []), ...(n.highlights || [])].some((v) => (v || '').toLowerCase().includes(q)));
     const shown = notes.filter(match);
     const scroll = el.list.scrollTop;
     el.list.textContent = '';
     for (const g of groupNotes(shown, prefs.mode)) {
-      const open = !!q || !prefs.collapsed[collapsedKey(g)];
+      const open = !!query() || !prefs.collapsed[collapsedKey(g)];
       const li = document.createElement('li');
       li.className = 'group' + (open ? ' open' : '');
       li.dataset.key = g.key; li.dataset.label = g.label;
@@ -199,6 +356,7 @@
       const i = notes.findIndex((n) => n.id === id);
       if (i >= 0 && sum) notes[i] = { ...notes[i], ...sum }; else if (i >= 0) notes[i].title = data.title;
       renderList();
+      if (query()) scheduleSearch(300); // the saved text may match differently now
       if (!dirty) setStatus('Saved');
     }).catch((e) => { dirty = true; setStatus('Save failed: ' + (e && e.message || e)); });
     return saving;
@@ -219,9 +377,11 @@
     setStatus(''); cancelDelete(); hideLink(); hideSubjectEdit(); hideBubble();
     el.tagInput.value = ''; el.hlPanel.hidden = true;
     renderHighlights();
+    renderSummary();
     revealCurrent();
-    document.getElementById('scroller').scrollTop = 0;
+    el.scroller.scrollTop = 0;
     renderList();
+    highlightNote({ jump: true });
   }
 
   // Expand the group that holds the open note so the selection is never hidden.
@@ -352,7 +512,7 @@
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.remove) return removeTag(b.dataset.remove);
-    if (b.dataset.tag) { el.filter.value = tagFilterWord(b.dataset.tag); renderList(); }
+    if (b.dataset.tag) { el.filter.value = tagFilterWord(b.dataset.tag); runSearch(); }
   });
 
   // Tags view: the pencil on a tag's header renames it on every note (or merges it into another tag).
@@ -533,12 +693,121 @@
   el.bubble.addEventListener('mousedown', (e) => e.preventDefault());
   el.bubbleBtn.addEventListener('click', toggleHighlight);
 
+  /* ---------- summary ---------- */
+  function renderSummary() {
+    if (!current) return;
+    const id = current.id;
+    const text = current.summary || '';
+    const isAi = current.summarySource === 'ai';
+    const busy = aiBusy.has(id);
+    el.summary.hidden = !text && !settings.hasKey;
+    el.sumText.textContent = text || (busy ? 'Writing a summary…' : 'No summary yet.');
+    el.sumText.classList.toggle('empty', !text);
+    el.sumBadge.textContent = isAi ? 'AI' : 'Local';
+    el.sumBadge.classList.toggle('ai', isAi);
+    el.sumBadge.hidden = !text;
+    el.sumBadge.title = isAi ? 'Written by Claude from the page text' : 'Picked from the page on this device, without AI';
+    const err = aiErrors.get(id);
+    el.sumStatus.textContent = busy ? 'Summarizing…' : err || '';
+    el.sumStatus.classList.toggle('error', !busy && !!err);
+    if (settings.hasKey) {
+      el.sumBtn.textContent = isAi ? 'Regenerate' : '\u2726 Summarize with AI';
+      el.sumBtn.title = isAi ? 'Ask Claude for a fresh summary' : 'Ask Claude to summarize this page';
+    } else {
+      el.sumBtn.textContent = 'Set up AI';
+      el.sumBtn.title = 'Add an Anthropic API key to get AI summaries';
+    }
+    el.sumBtn.disabled = busy;
+  }
+  el.sumBtn.addEventListener('click', async () => {
+    if (!current) return;
+    if (!settings.hasKey) { openSettings(); return; }
+    const id = current.id;
+    aiErrors.delete(id); aiBusy.add(id); renderSummary();
+    try { await flush(); await api.ai.summarize(id); }
+    catch (e) { aiErrors.set(id, cleanErr(e)); }
+    finally { aiBusy.delete(id); renderSummary(); }
+  });
+  api.onAiStatus(({ id, busy, error }) => {
+    if (busy) { aiBusy.add(id); aiErrors.delete(id); } else aiBusy.delete(id);
+    if (error) aiErrors.set(id, error);
+    if (current && current.id === id) renderSummary();
+  });
+  // A background summary landed: refresh the list (subjects may move) and the open summary.
+  api.onNoteChanged(async ({ id }) => {
+    try { await refreshList(); } catch {}
+    if (!current || current.id !== id) return;
+    try {
+      const n = await api.notes.get(id);
+      if (current && current.id === id) { current.summary = n.summary; current.summarySource = n.summarySource; current.topics = n.topics; renderSummary(); }
+    } catch {}
+  });
+
+  /* ---------- regroup by meaning ---------- */
+  let regrouping = false;
+  function renderRegroup() {
+    el.regroup.hidden = !settings.hasKey || prefs.mode !== 'subject';
+    el.regroup.disabled = regrouping;
+    if (el.regroup.hidden && !regrouping) el.regroupStatus.textContent = '';
+  }
+  el.regroup.addEventListener('click', async () => {
+    if (regrouping) return;
+    regrouping = true; renderRegroup();
+    el.regroupStatus.textContent = 'Grouping…'; el.regroupStatus.title = '';
+    try {
+      await flush();
+      notes = await api.ai.organize();
+      revealCurrent(); renderList();
+      el.regroupStatus.textContent = '';
+    } catch (e) {
+      el.regroupStatus.textContent = 'Failed'; el.regroupStatus.title = cleanErr(e);
+    } finally { regrouping = false; renderRegroup(); }
+  });
+
+  /* ---------- settings ---------- */
+  function applySettings(s) {
+    settings = s || settings;
+    renderRegroup();
+    if (current) renderSummary();
+    el.keyCurrent.textContent = settings.hasKey
+      ? (settings.keySource === 'environment' ? `Using the key from ANTHROPIC_API_KEY (${settings.keyHint}).` : `A key is saved (${settings.keyHint}).`)
+      : 'No key saved. AI features are off.';
+    el.keyRemove.hidden = settings.keySource !== 'settings';
+    el.autoSum.checked = settings.autoSummarize !== false;
+    el.autoSum.disabled = !settings.hasKey;
+  }
+  function setMsg(text, isErr) { el.setMsg.textContent = text; el.setMsg.hidden = !text; el.setMsg.classList.toggle('error', !!isErr); }
+  function openSettings() { setMsg(''); el.keyInput.value = ''; applySettings(); el.settings.hidden = false; el.keyInput.focus(); }
+  function closeSettings() { el.settings.hidden = true; }
+  $('settings-btn').addEventListener('click', openSettings);
+  $('settings-close').addEventListener('click', closeSettings);
+  $('console-link').addEventListener('click', (e) => { e.preventDefault(); api.openExternal(e.currentTarget.href); });
+  el.settings.addEventListener('mousedown', (e) => { if (e.target === el.settings) closeSettings(); });
+  el.settings.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeSettings(); } });
+  el.setForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const key = el.keyInput.value.trim();
+    if (!key) { setMsg('Paste a key first.', true); return; }
+    setMsg('Checking the key…');
+    try { applySettings(await api.settings.setKey(key)); el.keyInput.value = ''; setMsg('Saved. New pages will get AI summaries.'); }
+    catch (err) { setMsg(cleanErr(err), true); }
+  });
+  el.keyRemove.addEventListener('click', async () => {
+    try { applySettings(await api.settings.setKey('')); setMsg('Key removed. Gatherer is back to local summaries.'); }
+    catch (err) { setMsg(cleanErr(err), true); }
+  });
+  el.autoSum.addEventListener('change', async () => {
+    try { applySettings(await api.settings.setAutoSummarize(el.autoSum.checked)); } catch (err) { setMsg(cleanErr(err), true); }
+  });
+
   function showEmpty() {
-    current = null; el.view.hidden = true; el.empty.hidden = false; renderList();
+    current = null; el.view.hidden = true; el.empty.hidden = false; renderList(); highlightNote();
   }
 
   /* ---------- editor / toolbar ---------- */
   el.title.addEventListener('input', markDirty);
+  el.title.addEventListener('input', rehighlightSoon);
+  el.editor.addEventListener('input', rehighlightSoon);
   el.title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.editor.focus(); } });
   el.editor.addEventListener('input', markDirty);
   el.editor.addEventListener('paste', (e) => {
@@ -654,11 +923,12 @@
     }
     const li = e.target.closest('li.note');
     if (li && !(current && current.id === li.dataset.id)) openNote(li.dataset.id);
+    else if (li && textQuery()) gotoMatch(matchIdx + 1);
   });
 
   // Up/Down moves between visible notes, wherever focus is in the sidebar (except the filter box).
   document.getElementById('sidebar').addEventListener('keydown', (e) => {
-    if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || e.target === el.filter) return;
+    if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || (e.target === el.filter && !results)) return;
     const items = [...el.list.querySelectorAll('li.note')];
     if (!items.length) return;
     e.preventDefault();
@@ -710,7 +980,24 @@
     if (!n || (n.subject || OTHER) === g.dataset.label) { renderList(); return; }
     await setSubject(id, g.dataset.label === OTHER ? '' : g.dataset.label);
   });
-  el.filter.addEventListener('input', renderList);
+  el.filter.addEventListener('input', () => { if (!query()) runSearch(); else { if (!results) renderList(); scheduleSearch(); } });
+  el.filter.addEventListener('keydown', async (e) => {
+    if (e.key === 'Escape') {
+      if (!el.filter.value) return el.filter.blur();
+      e.preventDefault(); el.filter.value = ''; runSearch(); return;
+    }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (query() !== resultsFor) await runSearch();
+    if (matchRanges.length) gotoMatch(matchIdx + (e.shiftKey ? -1 : 1));
+    else if (results && results.length) openNote(results[0].id);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || !el.modal.hidden) return;
+    const k = e.key.toLowerCase();
+    if (k === 'f' && !e.shiftKey) { e.preventDefault(); el.filter.focus(); el.filter.select(); }
+    else if (k === 'g' && matchRanges.length) { e.preventDefault(); gotoMatch(matchIdx + (e.shiftKey ? -1 : 1)); }
+  });
 
   /* ---------- modal ---------- */
   let busy = false;
@@ -752,6 +1039,8 @@
   window.addEventListener('blur', () => { if (dirty) flush(); });
 
   (async () => {
+    try { applySettings(await api.settings.get()); } catch {}
+    try { for (const id of await api.notes.aiBusy()) aiBusy.add(id); } catch {}
     setMode(prefs.mode);
     try { await refreshList(); } catch (e) { el.listEmpty.textContent = String(e.message || e); el.listEmpty.hidden = false; }
     if (notes.length) openNote(notes[0].id); else showEmpty();
