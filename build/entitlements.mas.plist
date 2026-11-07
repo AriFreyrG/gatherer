@@ -7,8 +7,11 @@
     <!-- Gathering pages and their images. -->
     <key>com.apple.security.network.client</key>
     <true/>
-    <!-- File > Import Notes: read a notes folder the user picks, such as an earlier build's. -->
-    <key>com.apple.security.files.user-selected.read-only</key>
+    <!-- Folders the user picks: File > Import Notes reads one, export and sync write to one. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <!-- Sync keeps a security-scoped bookmark to its folder across launches. -->
+    <key>com.apple.security.files.bookmarks.app-scope</key>
     <true/>
   </dict>
 </plist>
