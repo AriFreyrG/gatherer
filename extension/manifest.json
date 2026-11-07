@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Send to Gatherer",
+  "short_name": "Gatherer",
+  "version": "0.1.0",
+  "description": "Save the page you're reading, or any link, to your Gatherer notebook in one click.",
+  "permissions": ["activeTab", "contextMenus", "scripting"],
+  "action": { "default_title": "Save this page to Gatherer" },
+  "background": { "service_worker": "background.js", "scripts": ["background.js"] },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+G", "mac": "Alt+Shift+G" },
+      "description": "Save this page to Gatherer"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": { "id": "send-to-gatherer@gatherer.app", "strict_min_version": "121.0" }
+  }
+}

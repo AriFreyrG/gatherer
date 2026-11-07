@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data: https: http: gatherer-asset:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data: https: http: gatherer-asset:; frame-src gatherer-asset:; style-src 'self' 'unsafe-inline'; script-src 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gatherer</title>
 <link rel="stylesheet" href="styles.css">
@@ -13,17 +13,22 @@
     <div class="brand">Gatherer</div>
     <button id="new-btn" class="primary">+ New note</button>
     <div id="search-wrap">
-      <input id="filter" type="search" placeholder="Search notes…" autocomplete="off" spellcheck="false"
-        title="Search every note (Cmd/Ctrl+F). Enter jumps to the next match in the open note.">
+      <input id="filter" type="search" placeholder="Search notes or #tag…" autocomplete="off" spellcheck="false"
+        title="Search every note (Cmd/Ctrl+F). Use #tag to show only notes with that tag. Enter jumps to the next match in the open note.">
       <span id="search-count" class="muted" hidden></span>
     </div>
     <div id="organize" role="radiogroup" aria-label="Organize notes by">
       <button role="radio" data-mode="subject" title="Group notes by what they are about">Subject</button>
       <button role="radio" data-mode="source" title="Group notes by the site they came from">Source</button>
       <button role="radio" data-mode="date" title="Group notes by when you gathered them">Date</button>
+      <button role="radio" data-mode="tag" title="Group notes by your own tags">Tags</button>
     </div>
     <ul id="list"></ul>
     <div id="list-empty" class="muted" hidden>No notes yet.</div>
+    <div id="sidebar-foot">
+      <button id="sync-btn" type="button" title="Sync notes across your Macs with iCloud Drive"><span id="sync-dot"></span><span id="sync-label">iCloud sync is off</span></button>
+      <button id="export-all-btn" type="button" title="Export every note as Markdown">Export all</button>
+    </div>
     <div id="side-foot">
       <button id="regroup-btn" type="button" title="Ask the AI to group your notes by what they mean, not by shared words" hidden>&#10022; Regroup by meaning</button>
       <span id="regroup-status" class="muted"></span>
@@ -52,6 +57,7 @@
         <button data-cmd="italic" title="Italic (Cmd/Ctrl+I)"><i>I</i></button>
         <button data-cmd="underline" title="Underline (Cmd/Ctrl+U)"><u>U</u></button>
         <button data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+        <button data-act="highlight" id="hl-btn" title="Highlight (Cmd/Ctrl+Shift+H)"><span class="hl-icon">H</span></button>
         <span class="sep"></span>
         <button data-cmd="insertUnorderedList" title="Bullet list">&#8226;&#8801;</button>
         <button data-cmd="insertOrderedList" title="Numbered list">1.&#8801;</button>
@@ -66,6 +72,13 @@
         <button data-cmd="redo" title="Redo">&#8631;</button>
         <span class="spacer"></span>
         <span id="save-status" class="muted"></span>
+        <span id="export-wrap">
+          <button id="export-btn" type="button" title="Export this note" aria-haspopup="menu" aria-expanded="false">Export</button>
+          <span id="export-menu" role="menu" hidden>
+            <button type="button" role="menuitem" data-format="markdown">Markdown…</button>
+            <button type="button" role="menuitem" data-format="pdf">PDF…</button>
+          </span>
+        </span>
         <span id="delete-wrap">
           <button id="delete-btn" class="danger" title="Delete note">Delete</button>
           <span id="delete-confirm" hidden>
@@ -94,7 +107,21 @@
                 <datalist id="subject-options"></datalist>
               </form>
             </span>
+            <span id="meta-archive">Offline copy:
+              <button id="archive-btn" type="button" class="chip"></button>
+              <span id="archive-size"></span>
+            </span>
+            <span id="hl-wrap" hidden>Highlights:
+              <button id="hl-count" type="button" title="Show highlights" aria-expanded="false"></button>
+            </span>
+            <div id="tags-row">
+              <span class="label">Tags:</span>
+              <span id="tag-list"></span>
+              <input id="tag-input" type="text" list="tag-options" placeholder="Add tag…" autocomplete="off" spellcheck="false" maxlength="40" aria-label="Add tag">
+              <datalist id="tag-options"></datalist>
+            </div>
           </div>
+          <ol id="hl-panel" hidden></ol>
           <section id="summary" hidden>
             <div class="sh">
               <span class="label">Summary</span>
@@ -108,6 +135,16 @@
           <div id="editor" contenteditable="true" spellcheck="true"></div>
         </article>
       </div>
+
+      <div id="archive-view" hidden>
+        <div id="archive-bar">
+          <span id="archive-label" class="muted"></span>
+          <span class="spacer"></span>
+          <button id="archive-close" type="button">Back to note</button>
+        </div>
+        <!-- No allow-scripts / allow-same-origin: the page can't run code. allow-popups lets its links open in the browser. -->
+        <iframe id="archive-frame" sandbox="allow-popups" title="Offline copy of the original page"></iframe>
+      </div>
     </div>
   </main>
 </div>
@@ -118,12 +155,39 @@
     <input id="url-input" type="text" placeholder="https://example.com/article" autocomplete="off">
     <div id="modal-error" class="error" hidden></div>
     <div id="modal-busy" class="muted" hidden><span class="spinner"></span> Gathering…</div>
+    <p class="capture-tip muted">Skip the copy and paste: drop a link from your browser onto this window, or add the
+      Gatherer bookmarklet to your bookmarks bar and click it on any page.
+      <button type="button" id="copy-bookmarklet" class="link-btn">Copy bookmarklet</button></p>
     <div class="actions">
       <button type="button" id="modal-cancel">Cancel</button>
       <button type="submit" id="modal-go" class="primary">Gather</button>
     </div>
   </form>
 </div>
+
+<div id="sync-modal" class="backdrop" hidden>
+  <div class="dialog" role="dialog" aria-labelledby="sync-title">
+    <h3 id="sync-title">iCloud sync</h3>
+    <p id="sync-intro" class="muted">Keep your notes in a folder in iCloud Drive, and every Mac signed in to the same iCloud account gets them. Each Mac keeps its own full copy, so notes still open offline.</p>
+    <dl id="sync-info" hidden>
+      <dt>Folder</dt><dd id="sync-folder"></dd>
+      <dt>Last synced</dt><dd id="sync-when"></dd>
+    </dl>
+    <div id="sync-note" class="muted" hidden></div>
+    <div id="sync-error" class="error" hidden></div>
+    <div class="actions">
+      <button type="button" id="sync-off" class="danger" hidden>Turn off</button>
+      <span class="spacer"></span>
+      <button type="button" id="sync-close">Close</button>
+      <button type="button" id="sync-now" hidden>Sync now</button>
+      <button type="button" id="sync-choose" class="primary">Choose folder…</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" role="status" hidden><span id="toast-text"></span> <button type="button" id="toast-action" hidden>Show in Finder</button></div>
+
+<div id="hl-bubble" hidden><button type="button" id="hl-bubble-btn">Highlight</button></div>
 
 <div id="settings" class="backdrop" hidden>
   <form id="settings-form" class="dialog">

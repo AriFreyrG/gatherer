@@ -8,8 +8,16 @@ const TAGS = ['h1','h2','h3','h4','h5','h6','p','br','hr','ul','ol','li','dl','d
   'figure','figcaption','img','table','thead','tbody','tfoot','tr','th','td','caption','a','strong','b','em','i','u','s','del','ins',
   'mark','sub','sup','small','abbr','cite','q','time','span','div','section','article'];
 const ATTRS = ['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'target', 'rel'];
-const REMOVE = 'script,style,noscript,iframe,form,input,button,select,textarea,nav,aside,footer,svg,canvas,video,audio,object,embed,link,meta';
-const AD_RE = /\b(ad|ads|advert|sponsor|promo|newsletter|share|social|related|comment)s?\b/i;
+const REMOVE = 'script,style,noscript,iframe,form,input,button,select,textarea,nav,svg,canvas,video,audio,object,embed,link,meta';
+
+// Clutter detection works on whole class/id words, split on '-' and '_' and camelCase, so
+// "post-share" and "shareBar" match "share" but "shared-content" and "leader" don't.
+const CLUTTER = new Set(['ad', 'ads', 'advert', 'adverts', 'advertisement', 'advertising', 'sponsor', 'sponsors', 'sponsored',
+  'promo', 'promos', 'promoted', 'newsletter', 'newsletters', 'subscribe', 'share', 'shares', 'sharing', 'sharebar', 'social',
+  'related', 'recommended', 'comment', 'comments', 'disqus', 'outbrain', 'taboola']);
+// Words that turn a clutter word into a state flag about the page ("has-comments", "ad-free").
+const BEFORE_OK = new Set(['has', 'no', 'with', 'without', 'is', 'allow', 'allows', 'enable', 'enabled', 'show']);
+const AFTER_OK = new Set(['free', 'enabled', 'disabled', 'allowed', 'open', 'closed', 'count']);
 
 const purifyWindow = new JSDOM('').window;
 const DOMPurify = createDOMPurify(purifyWindow);
@@ -105,13 +113,58 @@ function fixImages(root, base) {
   }
 }
 
-function clean(root, base) {
-  root.querySelectorAll(REMOVE).forEach((n) => n.remove());
+// The clutter word an element's class or id names, or null.
+function clutterWord(el) {
+  for (const name of [el.getAttribute('class') || '', el.getAttribute('id') || '']) {
+    for (const part of name.split(/\s+/)) {
+      const words = part.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase().split(/[-_]+/).filter(Boolean);
+      for (let i = 0; i < words.length; i++) {
+        if (CLUTTER.has(words[i]) && !BEFORE_OK.has(words[i - 1]) && !AFTER_OK.has(words[i + 1])) return words[i];
+      }
+    }
+  }
+  return null;
+}
+
+const textLen = (el) => el.textContent.replace(/\s+/g, ' ').trim().length;
+function linkDensity(el) {
+  const total = textLen(el);
+  if (!total) return 0;
+  let links = 0;
+  for (const a of el.querySelectorAll('a')) links += textLen(a);
+  return links / total;
+}
+const longParagraphs = (el) => [...el.querySelectorAll('p')].filter((p) => textLen(p) >= 80).length;
+
+// True when el holds enough of the article that removing it would lose real content.
+function substantial(el, rootLen, { paragraphs = 3 } = {}) {
+  if (el.querySelector('h1,h2')) return true;
+  const len = textLen(el);
+  if (rootLen >= 600 && len >= rootLen * 0.3) return true;
+  return linkDensity(el) < 0.35 && longParagraphs(el) >= paragraphs;
+}
+
+// Removes share bars, ads, related links and similar widgets named by their class or id,
+// unless they hold a real share of the text.
+function removeClutter(root) {
+  const rootLen = textLen(root);
   for (const el of [...root.querySelectorAll('[class],[id]')]) {
     if (!el.isConnected || el === root) continue;
-    if (el.querySelector('h1,h2')?.closest('[class],[id]') === el && el.querySelectorAll('p').length > 8) continue; // likely main content wrapper
-    if (AD_RE.test(el.getAttribute('class') || '') || AD_RE.test(el.getAttribute('id') || '')) el.remove();
+    const word = clutterWord(el);
+    if (!word) continue;
+    // Comment threads are prose too, so only their size can protect them.
+    if (!substantial(el, rootLen, { paragraphs: /^comments?$|^disqus$/.test(word) ? Infinity : 3 })) el.remove();
   }
+}
+
+function clean(root, base) {
+  root.querySelectorAll(REMOVE).forEach((n) => n.remove());
+  const rootLen = textLen(root);
+  // Asides and footers are often callouts or notes inside the article: keep those that read like prose.
+  for (const el of [...root.querySelectorAll('aside,footer')]) {
+    if (el.isConnected && !substantial(el, rootLen, { paragraphs: el.tagName === 'ASIDE' ? 1 : 2 })) el.remove();
+  }
+  removeClutter(root);
   for (const a of root.querySelectorAll('a[href]')) {
     const href = a.getAttribute('href');
     if (href.startsWith('#') || /^javascript:/i.test(href)) { a.replaceWith(...a.childNodes); continue; }
@@ -159,17 +212,32 @@ function extract(html, finalUrl) {
   const ogImage = abs(meta(doc, 'meta[property="og:image"]') || meta(doc, 'meta[name="twitter:image"]'), finalUrl);
   const docTitle = (doc.title || '').trim();
   fixImages(doc.body || doc, finalUrl); // before Readability strips lazy attrs
+  // Readability drops class and id names, so clutter is removed by name before it runs.
+  if (doc.body) removeClutter(doc.body);
+  // Readability deletes every <aside>; keep callouts written inside the article as plain blocks.
+  for (const el of [...doc.querySelectorAll('article aside,main aside')]) {
+    if (!substantial(el, Infinity, { paragraphs: 1 })) continue;
+    const div = doc.createElement('div');
+    div.append(...el.childNodes);
+    el.replaceWith(div);
+  }
 
   let article = null;
   try { article = new Readability(doc.cloneNode(true)).parse(); } catch { /* fall back below */ }
 
+  // Readability sometimes keeps only one section of a long page. When the page's own <article>
+  // or <main> holds much more text than Readability kept, use that element instead.
+  const semantic = [...doc.querySelectorAll('article,main,[role="main"]')]
+    .reduce((best, el) => (!best || textLen(el) > textLen(best) ? el : best), null);
+  const readLen = article && article.content ? article.textContent.replace(/\s+/g, ' ').trim().length : 0;
+  const useReadability = readLen > 140 && !(semantic && readLen < textLen(semantic) * 0.5);
+
   let container;
-  if (article && article.content && article.textContent.trim().length > 140) {
+  if (useReadability) {
     container = new JSDOM(`<body>${article.content}</body>`, { url: finalUrl }).window.document.body;
   } else {
-    const src = doc.querySelector('main') || doc.querySelector('article') || doc.body;
+    const src = semantic || doc.body;
     container = new JSDOM(`<body>${src ? src.innerHTML : ''}</body>`, { url: finalUrl }).window.document.body;
-    article = null;
   }
   clean(container, finalUrl);
   let content = sanitize(container.innerHTML);
@@ -187,11 +255,12 @@ function extract(html, finalUrl) {
 async function scrape(input) {
   const url = normalizeUrl(input);
   const { html, finalUrl } = await fetchHtml(url);
-  try { return extract(html, finalUrl); }
+  // The raw page comes back too, so the offline copy is made from the same fetch as the note.
+  try { return { ...extract(html, finalUrl), html, finalUrl }; }
   catch (e) {
     if (e.message.startsWith('Could not find')) throw e;
     throw new Error(`Could not process the page at ${new URL(finalUrl).hostname} (${e.message})`);
   }
 }
 
-module.exports = { scrape, sanitize, normalizeUrl };
+module.exports = { scrape, sanitize, normalizeUrl, fetchHtml, extract };
