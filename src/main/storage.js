@@ -33,13 +33,16 @@ function newId() {
 }
 
 // Optional metadata: siteName and tags come from the page when gathered; subject is set by the
-// user to override automatic organisation (empty = automatic). summary and topics are written by
-// the optional AI layer: a short summary, and subject labels chosen by meaning.
-function render({ title, url, dateGathered, content, siteName, tags, subject, summary, topics: aiTopics }) {
+// user to override automatic organisation (empty = automatic). userTags are the user's own tags,
+// kept apart from the page's tags (which are often noisy) so only the user's show in the app.
+// Highlights are <mark> elements in the body, so they live with the text they mark.
+// summary and topics are written by the optional AI layer: a short summary, and subject labels
+// chosen by meaning.
+function render({ title, url, dateGathered, content, siteName, tags, subject, userTags, summary, topics: aiTopics }) {
   const opt = (name, v) => (v ? `<meta name="gatherer:${name}" content="${esc(v)}">\n` : '');
   return `<!doctype html>\n<html><head><meta charset="utf-8"><title>${esc(title)}</title>\n` +
     `<meta name="gatherer:url" content="${esc(url)}">\n<meta name="gatherer:date-gathered" content="${esc(dateGathered)}">\n` +
-    opt('site-name', siteName) + opt('tags', (tags || []).join(', ')) + opt('subject', subject) +
+    opt('site-name', siteName) + opt('tags', (tags || []).join(', ')) + opt('subject', subject) + opt('user-tags', (userTags || []).join(', ')) +
     opt('summary', summary) + opt('topics', (aiTopics || []).join(', ')) +
     `</head><body>${content}</body></html>\n`;
 }
@@ -55,7 +58,7 @@ function parse(id, html) {
   return {
     id, title: t ? unesc(t[1]) : 'Untitled', url: metaVal('url'), dateGathered: metaVal('date-gathered'),
     siteName: metaVal('site-name'), tags: csv(metaVal('tags')), subject: metaVal('subject'),
-    summary: metaVal('summary'), topics: csv(metaVal('topics')), content: b ? b[1] : '',
+    userTags: csv(metaVal('user-tags')), summary: metaVal('summary'), topics: csv(metaVal('topics')), content: b ? b[1] : '',
   };
 }
 
@@ -65,8 +68,21 @@ function writeAtomic(file, data) {
   fs.renameSync(tmp, file);
 }
 
-const summary = ({ id, title, url, dateGathered, siteName, subject }) =>
-  ({ id, title, url, dateGathered, siteName: siteName || '', pinnedSubject: subject || '' });
+// Text of each highlight (<mark>) in a note body, for the sidebar filter and the highlights list.
+function highlightsOf(html) {
+  const out = [];
+  const re = /<mark\b[^>]*>([\s\S]*?)<\/mark>/gi;
+  let m;
+  while ((m = re.exec(String(html || ''))) && out.length < 200) {
+    const text = topics.htmlToText(m[1]).trim();
+    if (text) out.push(text.length > 300 ? text.slice(0, 299) + '…' : text);
+  }
+  return out;
+}
+
+const summary = ({ id, title, url, dateGathered, siteName, subject, userTags, content }) =>
+  ({ id, title, url, dateGathered, siteName: siteName || '', pinnedSubject: subject || '',
+    userTags: userTags || [], highlights: highlightsOf(content) });
 
 // Parsed summary, topic profile and searchable text per file, reused while the file is unchanged.
 const cache = new Map(); // file name -> { key, sum, profile, text, tags, folded }
@@ -79,11 +95,12 @@ function readEntry(f) {
   if (hit && hit.key === key) return hit;
   const note = parse(f.slice(0, -5), fs.readFileSync(file, 'utf8'));
   const text = topics.htmlToText(note.content).trim();
+  const tags = [...note.userTags, ...note.tags];
   const entry = {
     key, sum: summary(note),
     brief: note.summary || localSummary({ title: note.title, text }),
-    profile: topics.profile({ title: note.title, tags: note.tags, text: (note.summary ? note.summary + ' ' : '') + text, aiTopics: note.topics }),
-    text, tags: note.tags, folded: null,
+    profile: topics.profile({ title: note.title, tags, text: (note.summary ? note.summary + ' ' : '') + text, aiTopics: note.topics }),
+    text, tags, folded: null,
   };
   cache.set(f, entry);
   return entry;
@@ -173,13 +190,20 @@ function briefs() {
   return [...cache.values()].map((e) => ({ id: e.sum.id, title: e.sum.title, summary: e.brief, pinned: e.sum.pinnedSubject }));
 }
 
-const cleanTags = (tags) => [...new Set((Array.isArray(tags) ? tags : []).map((t) => String(t).replace(/[,\s]+/g, ' ').trim()).filter((t) => t && t.length <= 40))].slice(0, 12);
+const cleanTags = (tags, max = 12) => [...new Set((Array.isArray(tags) ? tags : []).map((t) => String(t).replace(/[,\s]+/g, ' ').trim()).filter((t) => t && t.length <= 40))].slice(0, max);
+
+// The user's own tags. Case-insensitive duplicates collapse to the first spelling; a leading # is dropped.
+function cleanUserTags(tags) {
+  const seen = new Set();
+  return cleanTags((Array.isArray(tags) ? tags : []).map((t) => String(t).replace(/^#+/, '')), 50)
+    .filter((t) => { const k = t.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+}
 
 function create({ title, url, dateGathered, content, siteName, tags }) {
   const id = newId();
   const note = {
     title: String(title || 'Untitled'), url: url || '', dateGathered: dateGathered || new Date().toISOString(),
-    siteName: String(siteName || '').trim().slice(0, 80), tags: cleanTags(tags), subject: '', content: sanitize(content),
+    siteName: String(siteName || '').trim().slice(0, 80), tags: cleanTags(tags), subject: '', userTags: [], content: sanitize(content),
   };
   writeAtomic(fileFor(id), render(note));
   return { id, ...note };
@@ -200,6 +224,14 @@ function setSubject(id, subject) {
   return summary(next);
 }
 
+// Replace the user's tags on a note.
+function setTags(id, userTags) {
+  const cur = read(id);
+  const next = { ...cur, userTags: cleanUserTags(userTags) };
+  writeAtomic(fileFor(id), render(next));
+  return summary(next);
+}
+
 // Store what the AI produced. Either field may be omitted to leave it as it is; an empty summary
 // clears it (the note falls back to the local summary).
 function setAi(id, { summary: text, topics: labels } = {}) {
@@ -211,10 +243,28 @@ function setAi(id, { summary: text, topics: labels } = {}) {
   return summary(next);
 }
 
+// Rename or merge a tag across every note; an empty name removes it everywhere. Returns notes changed.
+function renameTag(from, to) {
+  const key = String(from || '').replace(/^#+/, '').trim().toLowerCase();
+  if (!key) return 0;
+  let changed = 0;
+  for (const f of fs.readdirSync(getDir())) {
+    if (!/^[\w-]+\.html$/.test(f)) continue;
+    const id = f.slice(0, -5);
+    let cur;
+    try { cur = read(id); } catch { continue; }
+    if (!cur.userTags.some((t) => t.toLowerCase() === key)) continue;
+    const tags = cur.userTags.flatMap((t) => (t.toLowerCase() === key ? (to ? [to] : []) : [t]));
+    writeAtomic(fileFor(id), render({ ...cur, userTags: cleanUserTags(tags) }));
+    changed++;
+  }
+  return changed;
+}
+
 function remove(id) {
   try { fs.unlinkSync(fileFor(id)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   fs.rmSync(assetDir(id), { recursive: true, force: true });
   return true;
 }
 
-module.exports = { setDir, list, search, get, textOf, briefs, create, save, setSubject, setAi, remove, assetsRoot, assetDir };
+module.exports = { setDir, list, search, get, textOf, briefs, create, save, setSubject, setTags, renameTag, setAi, remove, assetsRoot, assetDir };

@@ -106,6 +106,8 @@ app.whenReady().then(() => {
   });
   handle('notes:save', (id, data) => storage.save(id, data));
   handle('notes:setSubject', (id, subject) => storage.setSubject(id, subject));
+  handle('notes:setTags', (id, tags) => storage.setTags(id, tags));
+  handle('tags:rename', (from, to) => storage.renameTag(from, to));
   handle('notes:delete', (id) => storage.remove(id));
   handle('notes:aiBusy', () => [...inFlight.keys()]);
 

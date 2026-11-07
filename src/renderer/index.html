@@ -13,14 +13,15 @@
     <div class="brand">Gatherer</div>
     <button id="new-btn" class="primary">+ New note</button>
     <div id="search-wrap">
-      <input id="filter" type="search" placeholder="Search notes…" autocomplete="off" spellcheck="false"
-        title="Search every note (Cmd/Ctrl+F). Enter jumps to the next match in the open note.">
+      <input id="filter" type="search" placeholder="Search notes or #tag…" autocomplete="off" spellcheck="false"
+        title="Search every note (Cmd/Ctrl+F). Use #tag to show only notes with that tag. Enter jumps to the next match in the open note.">
       <span id="search-count" class="muted" hidden></span>
     </div>
     <div id="organize" role="radiogroup" aria-label="Organize notes by">
       <button role="radio" data-mode="subject" title="Group notes by what they are about">Subject</button>
       <button role="radio" data-mode="source" title="Group notes by the site they came from">Source</button>
       <button role="radio" data-mode="date" title="Group notes by when you gathered them">Date</button>
+      <button role="radio" data-mode="tag" title="Group notes by your own tags">Tags</button>
     </div>
     <ul id="list"></ul>
     <div id="list-empty" class="muted" hidden>No notes yet.</div>
@@ -52,6 +53,7 @@
         <button data-cmd="italic" title="Italic (Cmd/Ctrl+I)"><i>I</i></button>
         <button data-cmd="underline" title="Underline (Cmd/Ctrl+U)"><u>U</u></button>
         <button data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+        <button data-act="highlight" id="hl-btn" title="Highlight (Cmd/Ctrl+Shift+H)"><span class="hl-icon">H</span></button>
         <span class="sep"></span>
         <button data-cmd="insertUnorderedList" title="Bullet list">&#8226;&#8801;</button>
         <button data-cmd="insertOrderedList" title="Numbered list">1.&#8801;</button>
@@ -94,7 +96,17 @@
                 <datalist id="subject-options"></datalist>
               </form>
             </span>
+            <span id="hl-wrap" hidden>Highlights:
+              <button id="hl-count" type="button" title="Show highlights" aria-expanded="false"></button>
+            </span>
+            <div id="tags-row">
+              <span class="label">Tags:</span>
+              <span id="tag-list"></span>
+              <input id="tag-input" type="text" list="tag-options" placeholder="Add tag…" autocomplete="off" spellcheck="false" maxlength="40" aria-label="Add tag">
+              <datalist id="tag-options"></datalist>
+            </div>
           </div>
+          <ol id="hl-panel" hidden></ol>
           <section id="summary" hidden>
             <div class="sh">
               <span class="label">Summary</span>
@@ -124,6 +136,8 @@
     </div>
   </form>
 </div>
+
+<div id="hl-bubble" hidden><button type="button" id="hl-bubble-btn">Highlight</button></div>
 
 <div id="settings" class="backdrop" hidden>
   <form id="settings-form" class="dialog">

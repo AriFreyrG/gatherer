@@ -1,9 +1,11 @@
 // Bridge between the renderer and the main process. This is the IPC contract:
 //
-//   NoteSummary = { id, title, url, dateGathered, siteName, subject, pinnedSubject }
-//                 (dateGathered: ISO 8601; subject: inferred or pinned; pinnedSubject: '' when automatic)
-//   Note        = { id, title, url, dateGathered, siteName, tags, subject, content, summary, summarySource, topics }
-//                 (content: sanitized HTML body; summarySource: 'ai' | 'local' | ''; topics: AI subject labels)
+//   NoteSummary = { id, title, url, dateGathered, siteName, subject, pinnedSubject, userTags, highlights }
+//                 (dateGathered: ISO 8601; subject: inferred or pinned; pinnedSubject: '' when automatic;
+//                  userTags: the user's own tags; highlights: text of each <mark> in the body)
+//   Note        = { id, title, url, dateGathered, siteName, tags, userTags, subject, content, summary, summarySource, topics }
+//                 (tags: from the page, not shown; content: sanitized HTML body, highlights are <mark>;
+//                  summarySource: 'ai' | 'local' | ''; topics: AI subject labels)
 //   Settings    = { hasKey, keySource: 'settings'|'environment'|'', keyHint, autoSummarize }
 //
 //   notes.list()             -> NoteSummary[]  newest first
@@ -14,6 +16,8 @@
 //   notes.create(url)        -> Note           scrapes url, saves, returns new note
 //   notes.save(id, {title, content}) -> NoteSummary
 //   notes.setSubject(id, subject) -> NoteSummary  pin a subject; '' returns it to automatic
+//   notes.setTags(id, tags)  -> NoteSummary  replace the user's tags on a note
+//   tags.rename(from, to)    -> number         rename/merge a tag on every note; '' removes it
 //   notes.delete(id)         -> true
 //   notes.aiBusy()           -> id[]           notes whose AI summary is being written
 //   ai.summarize(id)         -> Note           (re)write the AI summary and subject labels
@@ -33,8 +37,12 @@ contextBridge.exposeInMainWorld('gatherer', {
     create: (url) => ipcRenderer.invoke('notes:create', url),
     save: (id, data) => ipcRenderer.invoke('notes:save', id, data),
     setSubject: (id, subject) => ipcRenderer.invoke('notes:setSubject', id, subject),
+    setTags: (id, tags) => ipcRenderer.invoke('notes:setTags', id, tags),
     delete: (id) => ipcRenderer.invoke('notes:delete', id),
     aiBusy: () => ipcRenderer.invoke('notes:aiBusy'),
+  },
+  tags: {
+    rename: (from, to) => ipcRenderer.invoke('tags:rename', from, to),
   },
   ai: {
     summarize: (id) => ipcRenderer.invoke('ai:summarize', id),
