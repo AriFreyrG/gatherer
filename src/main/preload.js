@@ -8,6 +8,9 @@
 //
 //   notes.list()             -> NoteSummary[]  newest first
 //   notes.get(id)            -> Note
+//   notes.search(query)      -> SearchResult[] best first; SearchResult = NoteSummary (without subject) +
+//                               { score, hits, titleRanges, snippet, snippetRanges }
+//                               (ranges: [[start, end], ...] character offsets of matches in title / snippet)
 //   notes.create(url)        -> Note           scrapes url, saves, returns new note
 //   notes.save(id, {title, content}) -> NoteSummary
 //   notes.setSubject(id, subject) -> NoteSummary  pin a subject; '' returns it to automatic
@@ -26,6 +29,7 @@ contextBridge.exposeInMainWorld('gatherer', {
   notes: {
     list: () => ipcRenderer.invoke('notes:list'),
     get: (id) => ipcRenderer.invoke('notes:get', id),
+    search: (query) => ipcRenderer.invoke('notes:search', query),
     create: (url) => ipcRenderer.invoke('notes:create', url),
     save: (id, data) => ipcRenderer.invoke('notes:save', id, data),
     setSubject: (id, subject) => ipcRenderer.invoke('notes:setSubject', id, subject),
