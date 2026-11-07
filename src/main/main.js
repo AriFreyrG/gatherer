@@ -59,6 +59,7 @@ app.whenReady().then(() => {
   });
   handle('notes:list', () => storage.list());
   handle('notes:get', (id) => storage.get(id));
+  handle('notes:search', (query) => storage.search(typeof query === 'string' ? query : ''));
   handle('notes:create', async (url) => {
     const normalized = normalizeUrl(url);
     const { title, content, siteName, tags } = await scrape(normalized);

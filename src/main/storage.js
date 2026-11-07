@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { sanitize } = require('./scraper');
 const topics = require('./topics');
+const match = require('../renderer/search-core');
 
 let dir = null;
 function setDir(d) { dir = d; }
@@ -63,8 +64,8 @@ function writeAtomic(file, data) {
 const summary = ({ id, title, url, dateGathered, siteName, subject }) =>
   ({ id, title, url, dateGathered, siteName: siteName || '', pinnedSubject: subject || '' });
 
-// Parsed summary + topic profile per file, reused while the file is unchanged.
-const cache = new Map(); // file name -> { key, sum, profile }
+// Parsed summary, topic profile and searchable text per file, reused while the file is unchanged.
+const cache = new Map(); // file name -> { key, sum, profile, text, tags, folded }
 
 function readEntry(f) {
   const file = path.join(getDir(), f);
@@ -73,13 +74,13 @@ function readEntry(f) {
   const hit = cache.get(f);
   if (hit && hit.key === key) return hit;
   const note = parse(f.slice(0, -5), fs.readFileSync(file, 'utf8'));
-  const entry = { key, sum: summary(note), profile: topics.profile({ title: note.title, tags: note.tags, text: topics.htmlToText(note.content) }) };
+  const text = topics.htmlToText(note.content).trim();
+  const entry = { key, sum: summary(note), profile: topics.profile({ title: note.title, tags: note.tags, text }), text, tags: note.tags, folded: null };
   cache.set(f, entry);
   return entry;
 }
 
-// NoteSummary[] newest first. Each carries `subject`: the pinned subject, or an inferred one.
-function list() {
+function readAll() {
   const entries = [];
   const seen = new Set();
   for (const f of fs.readdirSync(getDir())) {
@@ -88,9 +89,56 @@ function list() {
     try { entries.push(readEntry(f)); } catch { /* skip unreadable */ }
   }
   for (const f of cache.keys()) if (!seen.has(f)) cache.delete(f);
+  return entries;
+}
+
+// NoteSummary[] newest first. Each carries `subject`: the pinned subject, or an inferred one.
+function list() {
+  const entries = readAll();
   const subjects = topics.inferSubjects(entries.map((e) => ({ id: e.sum.id, profile: e.profile, pinned: e.sum.pinnedSubject })));
   return entries.map((e) => ({ ...e.sum, subject: subjects.get(e.sum.id) || topics.OTHER }))
     .sort((a, b) => (b.dateGathered || '').localeCompare(a.dateGathered || ''));
+}
+
+// Full-text search over every note's title, body, tags, site and URL. Every word of the query
+// must appear somewhere in the note. -> SearchResult[] best first, at most `limit`.
+function search(query, { limit = 200 } = {}) {
+  const terms = match.parseQuery(query);
+  if (!terms.length) return [];
+  const results = [];
+  for (const e of readAll()) {
+    if (!e.folded) {
+      e.folded = {
+        title: match.fold(e.sum.title), body: match.fold(e.text),
+        meta: match.fold([e.sum.siteName, e.sum.pinnedSubject, ...e.tags].join(' \u0000 ')), url: match.fold(e.sum.url),
+      };
+    }
+    const f = e.folded;
+    let score = 0;
+    let hits = 0;
+    let all = true;
+    for (const t of terms) {
+      const inTitle = f.title.includes(t);
+      const inBody = match.count(f.body, t);
+      const inMeta = f.meta.includes(t);
+      const inUrl = f.url.includes(t);
+      if (!inTitle && !inBody && !inMeta && !inUrl) { all = false; break; }
+      hits += inBody + (inTitle ? 1 : 0);
+      // Title matches count most; repeated body matches help, with diminishing returns.
+      score += (inTitle ? 12 : 0) + (inMeta ? 5 : 0) + (inUrl ? 2 : 0) + (inBody ? 3 + Math.log2(inBody) : 0);
+    }
+    if (!all) continue;
+    if (terms.length > 1 && f.title.includes(terms.join(' '))) score += 8;
+    const snip = match.snippet(e.text, f.body, terms);
+    results.push({
+      ...e.sum, score, hits,
+      titleRanges: match.findRanges(f.title, terms, 50),
+      snippet: snip.text, snippetRanges: snip.ranges,
+    });
+  }
+  return results
+    .sort((a, b) => b.score - a.score || (b.dateGathered || '').localeCompare(a.dateGathered || ''))
+    .slice(0, Math.max(1, Math.min(1000, limit | 0 || 200)));
 }
 
 function get(id) {
@@ -131,4 +179,4 @@ function remove(id) {
   return true;
 }
 
-module.exports = { setDir, list, get, create, save, setSubject, remove, assetsRoot, assetDir };
+module.exports = { setDir, list, search, get, create, save, setSubject, remove, assetsRoot, assetDir };
