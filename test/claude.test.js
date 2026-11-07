@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const ai = require('../src/main/ai');
+const ai = require('../src/main/claude');
 const { profile, inferSubjects } = require('../src/main/topics');
 const { localSummary } = require('../src/main/summarize');
 const settings = require('../src/main/settings');
@@ -93,7 +93,7 @@ test('settings encrypt the key and never expose it', () => {
   try {
     assert.strictEqual(settings.publicSettings().hasKey, false);
     const pub = settings.setApiKey(' sk-ant-secret1234 ');
-    assert.deepStrictEqual(pub, { hasKey: true, keySource: 'settings', keyHint: '…1234', autoSummarize: true });
+    assert.deepStrictEqual(pub, { hasKey: true, keySource: 'settings', keyHint: '…1234', autoSummarize: true, provider: 'auto' });
     assert.ok(!fs.readFileSync(file, 'utf8').includes('sk-ant-secret1234'));
     assert.strictEqual(settings.apiKey(), 'sk-ant-secret1234');
     settings.setApiKey('');
@@ -112,12 +112,12 @@ test('storage keeps AI summary and topics, falls back to a local summary', () =>
   assert.strictEqual(storage.get(a.id).summarySource, 'local');
   assert.match(storage.get(a.id).summary, /Attention layers/);
 
-  storage.setAi(a.id, { summary: 'How attention works.', topics: ['Machine learning'] });
+  storage.setAi(a.id, { summary: 'How attention works.', by: 'apple', topics: ['Machine learning'] });
   storage.setAi(b.id, { topics: ['Machine learning'] });
   storage.save(a.id, { content: body + '<p>Edited.</p>' });
   const n = storage.get(a.id);
   assert.strictEqual(n.summary, 'How attention works.');
-  assert.strictEqual(n.summarySource, 'ai');
+  assert.strictEqual(n.summarySource, 'apple');
   assert.deepStrictEqual(n.topics, ['Machine learning']);
   const l = storage.list();
   assert.strictEqual(l.find((x) => x.id === a.id).subject, 'Machine learning');

@@ -32,7 +32,8 @@
   let timer = null;
   let saving = Promise.resolve();
   let savedRange = null;
-  let settings = { hasKey: false, keySource: '', keyHint: '', autoSummarize: true };
+  let settings = { hasKey: false, keySource: '', keyHint: '', autoSummarize: true, provider: 'auto', engine: '', engineReason: '', appleAvailable: false, appleReason: '' };
+  const ENGINE = { apple: 'Apple Intelligence', claude: 'Claude' };
   const aiBusy = new Set(); // note ids whose AI summary is being written
   const aiErrors = new Map(); // id -> last error message
   const cleanErr = (e) => String((e && e.message) || e).replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
@@ -702,30 +703,33 @@
     if (!current) return;
     const id = current.id;
     const text = current.summary || '';
-    const isAi = current.summarySource === 'ai';
+    const by = current.summarySource;
+    const isAi = by === 'apple' || by === 'claude';
     const busy = aiBusy.has(id);
-    el.summary.hidden = !text && !settings.hasKey;
+    const engine = ENGINE[settings.engine];
+    el.summary.hidden = !text && !engine;
     el.sumText.textContent = text || (busy ? 'Writing a summary…' : 'No summary yet.');
     el.sumText.classList.toggle('empty', !text);
-    el.sumBadge.textContent = isAi ? 'AI' : 'Local';
+    el.sumBadge.textContent = isAi ? ENGINE[by] : 'Local';
     el.sumBadge.classList.toggle('ai', isAi);
     el.sumBadge.hidden = !text;
-    el.sumBadge.title = isAi ? 'Written by Claude from the page text' : 'Picked from the page on this device, without AI';
+    el.sumBadge.title = by === 'apple' ? 'Written on this Mac by Apple Intelligence' : by === 'claude' ? 'Written by Claude from the page text'
+      : 'Picked from the page on this device, without AI';
     const err = aiErrors.get(id);
     el.sumStatus.textContent = busy ? 'Summarizing…' : err || '';
     el.sumStatus.classList.toggle('error', !busy && !!err);
-    if (settings.hasKey) {
-      el.sumBtn.textContent = isAi ? 'Regenerate' : '\u2726 Summarize with AI';
-      el.sumBtn.title = isAi ? 'Ask Claude for a fresh summary' : 'Ask Claude to summarize this page';
+    if (engine) {
+      el.sumBtn.textContent = isAi ? 'Regenerate' : '\u2726 Summarize';
+      el.sumBtn.title = `${isAi ? 'Write a fresh summary' : 'Summarize this page'} with ${engine}`;
     } else {
       el.sumBtn.textContent = 'Set up AI';
-      el.sumBtn.title = 'Add an Anthropic API key to get AI summaries';
+      el.sumBtn.title = settings.engineReason || 'Turn on AI summaries in Settings';
     }
     el.sumBtn.disabled = busy;
   }
   el.sumBtn.addEventListener('click', async () => {
     if (!current) return;
-    if (!settings.hasKey) { openSettings(); return; }
+    if (!settings.engine) { openSettings(); return; }
     const id = current.id;
     aiErrors.delete(id); aiBusy.add(id); renderSummary();
     try { await flush(); await api.ai.summarize(id); }
@@ -750,7 +754,8 @@
   /* ---------- regroup by meaning ---------- */
   let regrouping = false;
   function renderRegroup() {
-    el.regroup.hidden = !settings.hasKey || prefs.mode !== 'subject';
+    el.regroup.hidden = !settings.engine || prefs.mode !== 'subject';
+    el.regroup.title = `Ask ${ENGINE[settings.engine] || 'the AI'} to group your notes by what they mean, not by shared words`;
     el.regroup.disabled = regrouping;
     if (el.regroup.hidden && !regrouping) el.regroupStatus.textContent = '';
   }
@@ -775,13 +780,30 @@
     if (current) renderSummary();
     el.keyCurrent.textContent = settings.hasKey
       ? (settings.keySource === 'environment' ? `Using the key from ANTHROPIC_API_KEY (${settings.keyHint}).` : `A key is saved (${settings.keyHint}).`)
-      : 'No key saved. AI features are off.';
+      : 'No key saved.';
     el.keyRemove.hidden = settings.keySource !== 'settings';
+    for (const r of document.querySelectorAll('input[name=provider]')) r.checked = r.value === settings.provider;
+    const st = $('engine-status');
+    st.classList.toggle('on', !!settings.engine);
+    st.innerHTML = '<span class="dot"></span>';
+    st.append(settings.engine
+      ? `Using ${ENGINE[settings.engine]}${settings.engine === 'apple' ? ', on this Mac. Nothing leaves your computer.' : '.'}`
+      : (settings.engineReason || 'AI is off.') + ' Using local summaries.');
+    if (settings.engine !== 'apple' && settings.provider !== 'off' && settings.appleReason && !st.textContent.includes(settings.appleReason)) {
+      st.append(` (Apple Intelligence: ${settings.appleReason})`);
+    }
     el.autoSum.checked = settings.autoSummarize !== false;
-    el.autoSum.disabled = !settings.hasKey;
+    el.autoSum.disabled = !settings.engine;
   }
   function setMsg(text, isErr) { el.setMsg.textContent = text; el.setMsg.hidden = !text; el.setMsg.classList.toggle('error', !!isErr); }
-  function openSettings() { setMsg(''); el.keyInput.value = ''; applySettings(); el.settings.hidden = false; el.keyInput.focus(); }
+  async function openSettings() {
+    setMsg(''); el.keyInput.value = ''; applySettings(); el.settings.hidden = false;
+    try { applySettings(await api.settings.get()); } catch {} // re-checks Apple Intelligence
+  }
+  $('provider').addEventListener('change', async (e) => {
+    if (e.target.name !== 'provider') return;
+    try { applySettings(await api.settings.setProvider(e.target.value)); setMsg(''); } catch (err) { setMsg(cleanErr(err), true); }
+  });
   function closeSettings() { el.settings.hidden = true; }
   $('settings-btn').addEventListener('click', openSettings);
   $('settings-close').addEventListener('click', closeSettings);
@@ -793,11 +815,11 @@
     const key = el.keyInput.value.trim();
     if (!key) { setMsg('Paste a key first.', true); return; }
     setMsg('Checking the key…');
-    try { applySettings(await api.settings.setKey(key)); el.keyInput.value = ''; setMsg('Saved. New pages will get AI summaries.'); }
+    try { applySettings(await api.settings.setKey(key)); el.keyInput.value = ''; setMsg(settings.engine === 'claude' ? 'Saved. New pages will get summaries from Claude.' : 'Saved. Choose Claude above to use it.'); }
     catch (err) { setMsg(cleanErr(err), true); }
   });
   el.keyRemove.addEventListener('click', async () => {
-    try { applySettings(await api.settings.setKey('')); setMsg('Key removed. Gatherer is back to local summaries.'); }
+    try { applySettings(await api.settings.setKey('')); setMsg('Key removed.'); }
     catch (err) { setMsg(cleanErr(err), true); }
   });
   el.autoSum.addEventListener('change', async () => {

@@ -7,9 +7,10 @@
     "start": "electron .",
     "test": "node --test test/*.test.js",
     "dist": "electron-builder",
-    "dist:mac": "electron-builder --mac",
+    "dist:mac": "npm run build:apple-ai && electron-builder --mac",
     "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist:linux": "electron-builder --linux",
+    "build:apple-ai": "sh scripts/build-apple-ai.sh"
   },
   "license": "MIT",
   "dependencies": {
@@ -47,7 +48,14 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "extraResources": [
+        {
+          "from": "native/apple-ai/bin/gatherer-ai",
+          "to": "gatherer-ai"
+        }
+      ],
+      "x64ArchFiles": "Contents/Resources/gatherer-ai"
     },
     "win": {
       "target": [

@@ -208,4 +208,9 @@ body.link-drop::after { content: 'Drop to gather this page'; position: fixed; in
 .dialog a { color: var(--accent); }
 .dialog .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 #settings-msg.error { color: var(--danger); }
+#provider { display: flex; flex-direction: column; gap: 4px; }
+#engine-status { color: var(--muted); }
+#engine-status.on { color: var(--fg); }
+#engine-status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: 1px; }
+#engine-status.on .dot { background: #2f9e44; }
 #sidebar-foot + #side-foot { border-top: 0; padding-top: 2px; }

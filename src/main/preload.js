@@ -6,9 +6,11 @@
 //   Note        = { id, title, url, dateGathered, siteName, tags, userTags, subject, content, archive, summary, summarySource, topics }
 //                 (tags: from the page, not shown; content: sanitized HTML body, highlights are <mark>;
 //                  archive: { savedAt, bytes } or null when there is no offline copy;
-//                  summarySource: 'ai' | 'local' | ''; topics: AI subject labels)
+//                  summarySource: 'apple' | 'claude' | 'local' | ''; topics: AI subject labels)
 //   The offline copy of a note is served at gatherer-asset://<id>/page.html (scripts and network blocked).
-//   Settings    = { hasKey, keySource: 'settings'|'environment'|'', keyHint, autoSummarize }
+//   Settings    = { hasKey, keySource: 'settings'|'environment'|'', keyHint, autoSummarize,
+//                   provider: 'auto'|'apple'|'claude'|'off', engine: 'apple'|'claude'|'' (what runs now),
+//                   engineReason, appleAvailable, appleReason }
 //
 //   notes.list()             -> NoteSummary[]  newest first
 //   notes.get(id)            -> Note
@@ -28,7 +30,7 @@
 //   notes.aiBusy()           -> id[]           notes whose AI summary is being written
 //   ai.summarize(id)         -> Note           (re)write the AI summary and subject labels
 //   ai.organize()            -> NoteSummary[]  regroup all automatic notes by meaning
-//   settings.get() / setKey(key) / setAutoSummarize(bool) -> Settings   ('' key removes it)
+//   settings.get() / setKey(key) / setAutoSummarize(bool) / setProvider(p) -> Settings   ('' key removes it)
 //   onNoteChanged(fn({id}))  the AI updated one note in the background
 //   onAiStatus(fn({id, busy, error?}))
 //   onNotesChanged(fn)       fn(ids) after sync or File > Import Notes changed, added or removed notes
@@ -75,6 +77,7 @@ contextBridge.exposeInMainWorld('gatherer', {
     get: () => ipcRenderer.invoke('settings:get'),
     setKey: (key) => ipcRenderer.invoke('settings:setKey', key),
     setAutoSummarize: (on) => ipcRenderer.invoke('settings:setAutoSummarize', on),
+    setProvider: (p) => ipcRenderer.invoke('settings:setProvider', p),
   },
   // notes:changed carries { id } from the AI, an id[] from sync, and nothing from an import.
   onNoteChanged: (fn) => ipcRenderer.on('notes:changed', (_e, p) => { if (p && !Array.isArray(p) && p.id) fn(p); }),

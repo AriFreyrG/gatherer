@@ -1,4 +1,6 @@
-// App settings in <userData>/settings.json. The Anthropic API key is encrypted with Electron's
+// App settings in <userData>/settings.json.
+//   provider: which engine writes summaries ('auto' | 'apple' | 'claude' | 'off'); see intelligence.js.
+// The optional Anthropic API key is encrypted with Electron's
 // safeStorage (the macOS Keychain, DPAPI on Windows, libsecret on Linux) and never sent to the
 // renderer. ANTHROPIC_API_KEY in the environment is honoured as a fallback for development.
 const fs = require('fs');
@@ -49,6 +51,7 @@ function publicSettings() {
     keySource: own ? 'settings' : env ? 'environment' : '',
     keyHint: shown ? `…${shown.slice(-4)}` : '',
     autoSummarize: read().autoSummarize !== false,
+    provider: PROVIDERS.includes(read().provider) ? read().provider : 'auto',
   };
 }
 
@@ -65,6 +68,12 @@ function setApiKey(key) {
   return publicSettings();
 }
 
+const PROVIDERS = ['auto', 'apple', 'claude', 'off'];
+function setProvider(p) {
+  if (!PROVIDERS.includes(p)) throw new Error('Unknown AI provider');
+  const s = read(); s.provider = p; write(s); return publicSettings();
+}
+
 function setAutoSummarize(on) { const s = read(); s.autoSummarize = !!on; write(s); return publicSettings(); }
 
-module.exports = { setup, apiKey, publicSettings, setApiKey, setAutoSummarize };
+module.exports = { setup, apiKey, publicSettings, setApiKey, setAutoSummarize, setProvider };

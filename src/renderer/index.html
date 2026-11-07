@@ -193,20 +193,31 @@
   <form id="settings-form" class="dialog">
     <h3>Settings</h3>
     <section class="field">
-      <label for="key-input"><b>AI summaries and grouping</b></label>
-      <p class="muted small">Gatherer can use Claude to write a short summary of each page and to group notes by meaning.
-        Paste your own Anthropic API key from <a href="https://console.anthropic.com/settings/keys" id="console-link">console.anthropic.com</a>.
-        Page text is sent to Anthropic only when a summary or regroup runs. The key is stored encrypted in your system keychain.
-        Without a key everything still works offline, with local summaries and keyword grouping.</p>
+      <b>Summaries and subjects</b>
+      <p class="muted small">Gatherer writes a short summary of each page and groups notes by what they mean.
+        Without AI it still works, using sentences picked from the page and keyword grouping.</p>
+      <div id="provider" role="radiogroup" aria-label="Who writes summaries">
+        <label class="check"><input type="radio" name="provider" value="auto"> Automatic: Apple Intelligence when available</label>
+        <label class="check"><input type="radio" name="provider" value="apple"> Apple Intelligence, on this Mac</label>
+        <label class="check"><input type="radio" name="provider" value="claude"> Claude, with your Anthropic API key</label>
+        <label class="check"><input type="radio" name="provider" value="off"> Off, local summaries only</label>
+      </div>
+      <div id="engine-status" class="small"></div>
+      <label class="check"><input id="auto-summarize" type="checkbox"> Summarize new pages automatically</label>
+    </section>
+    <section class="field" id="claude-field">
+      <label for="key-input"><b>Claude (optional)</b></label>
+      <p class="muted small">For Macs without Apple Intelligence, or other computers. Paste your own key from
+        <a href="https://console.anthropic.com/settings/keys" id="console-link">console.anthropic.com</a>.
+        Page text is sent to Anthropic only while Claude writes a summary or regroups. The key is stored encrypted in your system keychain.</p>
       <div id="key-current" class="muted small"></div>
       <div class="row">
         <input id="key-input" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
-        <button id="key-save" class="primary" type="submit">Save key</button>
+        <button id="key-save" type="submit">Save key</button>
         <button id="key-remove" type="button" class="danger" hidden>Remove</button>
       </div>
-      <label class="check"><input id="auto-summarize" type="checkbox"> Summarize new pages automatically</label>
-      <div id="settings-msg" class="small" hidden></div>
     </section>
+    <div id="settings-msg" class="small" hidden></div>
     <div class="actions"><button type="button" id="settings-close">Done</button></div>
   </form>
 </div>
