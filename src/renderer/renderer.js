@@ -12,6 +12,8 @@
     delBtn: $('delete-btn'), delConfirm: $('delete-confirm'),
     organize: $('organize'), chip: $('subject-chip'), subjForm: $('subject-form'),
     subjInput: $('subject-input'), subjOptions: $('subject-options'),
+    scroller: $('scroller'), archBtn: $('archive-btn'), archSize: $('archive-size'),
+    archView: $('archive-view'), archFrame: $('archive-frame'), archLabel: $('archive-label'), archClose: $('archive-close'),
   };
 
   let notes = [];
@@ -175,6 +177,7 @@
     el.url.textContent = note.url || ''; el.url.dataset.url = note.url || '';
     el.url.title = note.url || '';
     setStatus(''); cancelDelete(); hideLink(); hideSubjectEdit();
+    hideArchive(); renderArchive();
     revealCurrent();
     document.getElementById('scroller').scrollTop = 0;
     renderList();
@@ -232,7 +235,50 @@
   el.subjInput.addEventListener('blur', commitSubject);
   el.subjInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); hideSubjectEdit(); } });
 
+  /* ---------- offline copy ---------- */
+  // Every note keeps a full snapshot of the original page that opens with no network.
+  const fmtSize = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+  let archiving = null; // id of the note whose copy is being saved
+  function renderArchive() {
+    if (!current) return;
+    const a = current.archive;
+    el.archBtn.disabled = archiving === current.id;
+    el.archBtn.classList.toggle('missing', !a);
+    if (archiving === current.id) { el.archBtn.textContent = 'Saving…'; el.archSize.textContent = ''; return; }
+    el.archBtn.textContent = a ? 'View' : 'Save now';
+    el.archBtn.title = a ? `See the page as it looked when it was saved (${fmtDate(a.savedAt)}), even offline` : 'This note has no offline copy yet. Fetch the page again and keep a full copy of it.';
+    el.archSize.textContent = a ? fmtSize(a.bytes) : '';
+    el.archSize.className = 'muted';
+  }
+  function showArchive() {
+    if (!current || !current.archive) return;
+    hideLink(); cancelDelete();
+    el.archLabel.textContent = `Offline copy of ${host(current.url) || 'the page'}, saved ${fmtDate(current.archive.savedAt, { dateStyle: 'medium', timeStyle: 'short' })}`;
+    el.archFrame.src = `gatherer-asset://${current.id}/page.html?v=${encodeURIComponent(current.archive.savedAt)}`;
+    el.toolbar.hidden = true; el.scroller.hidden = true; el.archView.hidden = false;
+    el.archClose.focus();
+  }
+  function hideArchive() {
+    if (el.archView.hidden) return;
+    el.archView.hidden = true; el.archFrame.removeAttribute('src');
+    el.toolbar.hidden = false; el.scroller.hidden = false;
+  }
+  async function saveArchiveNow() {
+    const id = current.id;
+    archiving = id; renderArchive();
+    try {
+      const note = await api.notes.archive(id);
+      if (current && current.id === id) current.archive = note.archive;
+    } catch (e) {
+      if (current && current.id === id) setStatus('Offline copy failed: ' + String((e && e.message) || e).replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, ''));
+    } finally { archiving = null; renderArchive(); }
+  }
+  el.archBtn.addEventListener('click', () => { if (current && current.archive) showArchive(); else if (current) saveArchiveNow(); });
+  el.archClose.addEventListener('click', hideArchive);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el.archView.hidden && el.modal.hidden) hideArchive(); });
+
   function showEmpty() {
+    hideArchive();
     current = null; el.view.hidden = true; el.empty.hidden = false; renderList();
   }
 

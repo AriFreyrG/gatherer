@@ -187,11 +187,12 @@ function extract(html, finalUrl) {
 async function scrape(input) {
   const url = normalizeUrl(input);
   const { html, finalUrl } = await fetchHtml(url);
-  try { return extract(html, finalUrl); }
+  // The raw page comes back too, so the offline copy is made from the same fetch as the note.
+  try { return { ...extract(html, finalUrl), html, finalUrl }; }
   catch (e) {
     if (e.message.startsWith('Could not find')) throw e;
     throw new Error(`Could not process the page at ${new URL(finalUrl).hostname} (${e.message})`);
   }
 }
 
-module.exports = { scrape, sanitize, normalizeUrl };
+module.exports = { scrape, sanitize, normalizeUrl, fetchHtml };

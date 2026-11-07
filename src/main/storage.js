@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { sanitize } = require('./scraper');
 const topics = require('./topics');
+const { FILE: ARCHIVE_FILE } = require('./archive');
 
 let dir = null;
 function setDir(d) { dir = d; }
@@ -93,9 +94,27 @@ function list() {
     .sort((a, b) => (b.dateGathered || '').localeCompare(a.dateGathered || ''));
 }
 
+// Every note keeps a full offline copy of the original page next to its images.
+const archiveFile = (id) => path.join(assetDir(id), ARCHIVE_FILE);
+
+// { savedAt, bytes } for the note's offline copy, or null if it has none.
+function archiveInfo(id) {
+  try { const st = fs.statSync(archiveFile(id)); return { savedAt: st.mtime.toISOString(), bytes: st.size }; }
+  catch { return null; }
+}
+
+function saveArchive(id, html) {
+  fileFor(id);
+  fs.mkdirSync(assetDir(id), { recursive: true });
+  writeAtomic(archiveFile(id), html);
+  return archiveInfo(id);
+}
+
 function get(id) {
-  try { return parse(id, fs.readFileSync(fileFor(id), 'utf8')); }
+  let note;
+  try { note = parse(id, fs.readFileSync(fileFor(id), 'utf8')); }
   catch (e) { throw e.code === 'ENOENT' ? new Error('Note not found') : e; }
+  return { ...note, archive: archiveInfo(id) };
 }
 
 const cleanTags = (tags) => [...new Set((Array.isArray(tags) ? tags : []).map((t) => String(t).replace(/[,\s]+/g, ' ').trim()).filter((t) => t && t.length <= 40))].slice(0, 12);
@@ -131,4 +150,4 @@ function remove(id) {
   return true;
 }
 
-module.exports = { setDir, list, get, create, save, setSubject, remove, assetsRoot, assetDir };
+module.exports = { setDir, list, get, create, save, setSubject, remove, assetsRoot, assetDir, saveArchive, archiveInfo };

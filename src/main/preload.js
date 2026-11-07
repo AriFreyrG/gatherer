@@ -2,13 +2,16 @@
 //
 //   NoteSummary = { id, title, url, dateGathered, siteName, subject, pinnedSubject }
 //                 (dateGathered: ISO 8601; subject: inferred or pinned; pinnedSubject: '' when automatic)
-//   Note        = { id, title, url, dateGathered, siteName, tags, subject, content } (content: sanitized HTML body)
+//   Note        = { id, title, url, dateGathered, siteName, tags, subject, content, archive }
+//                 (content: sanitized HTML body; archive: { savedAt, bytes } or null when there is no offline copy)
+//   The offline copy of a note is served at gatherer-asset://<id>/page.html (scripts and network blocked).
 //
 //   notes.list()             -> NoteSummary[]  newest first
 //   notes.get(id)            -> Note
 //   notes.create(url)        -> Note           scrapes url, saves, returns new note
 //   notes.save(id, {title, content}) -> NoteSummary
 //   notes.setSubject(id, subject) -> NoteSummary  pin a subject; '' returns it to automatic
+//   notes.archive(id)        -> Note           fetches the source again and saves a fresh offline copy
 //   notes.delete(id)         -> true
 //
 // Failures reject with an Error whose message is shown to the user.
@@ -21,6 +24,7 @@ contextBridge.exposeInMainWorld('gatherer', {
     create: (url) => ipcRenderer.invoke('notes:create', url),
     save: (id, data) => ipcRenderer.invoke('notes:save', id, data),
     setSubject: (id, subject) => ipcRenderer.invoke('notes:setSubject', id, subject),
+    archive: (id) => ipcRenderer.invoke('notes:archive', id),
     delete: (id) => ipcRenderer.invoke('notes:delete', id),
   },
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),

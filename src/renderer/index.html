@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data: https: http: gatherer-asset:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data: https: http: gatherer-asset:; frame-src gatherer-asset:; style-src 'self' 'unsafe-inline'; script-src 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gatherer</title>
 <link rel="stylesheet" href="styles.css">
@@ -84,9 +84,23 @@
                 <datalist id="subject-options"></datalist>
               </form>
             </span>
+            <span id="meta-archive">Offline copy:
+              <button id="archive-btn" type="button" class="chip"></button>
+              <span id="archive-size"></span>
+            </span>
           </div>
           <div id="editor" contenteditable="true" spellcheck="true"></div>
         </article>
+      </div>
+
+      <div id="archive-view" hidden>
+        <div id="archive-bar">
+          <span id="archive-label" class="muted"></span>
+          <span class="spacer"></span>
+          <button id="archive-close" type="button">Back to note</button>
+        </div>
+        <!-- No allow-scripts / allow-same-origin: the page can't run code. allow-popups lets its links open in the browser. -->
+        <iframe id="archive-frame" sandbox="allow-popups" title="Offline copy of the original page"></iframe>
       </div>
     </div>
   </main>

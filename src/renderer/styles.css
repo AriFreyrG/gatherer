@@ -74,9 +74,15 @@ article { max-width: 720px; margin: 0 auto; }
 #meta { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 13px; padding-bottom: 16px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
 #meta a { color: var(--accent); text-decoration: none; word-break: break-all; }
 #meta a:hover { text-decoration: underline; }
-#subject-chip { padding: 1px 8px; min-width: 0; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; vertical-align: 1px; }
+#subject-chip, #archive-btn { padding: 1px 8px; min-width: 0; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; vertical-align: 1px; }
 #subject-chip .auto { color: var(--muted); font-size: 11px; margin-left: 4px; }
 #subject-form { display: inline; }
+#archive-btn.missing { border-style: dashed; color: var(--muted); }
+#archive-size { font-size: 12px; margin-left: 2px; }
+#archive-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#archive-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+#archive-bar .spacer { flex: 1; }
+#archive-frame { flex: 1; width: 100%; border: 0; background: #fff; }
 #subject-input { padding: 1px 8px; font-size: 12px; border-radius: 999px; width: 180px; }
 
 #editor { outline: none; font: 17px/1.7 Georgia, "Iowan Old Style", "Times New Roman", serif; overflow-wrap: anywhere; min-height: 40vh; }
