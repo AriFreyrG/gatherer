@@ -34,13 +34,14 @@ function newId() {
 
 // Optional metadata: siteName and tags come from the page when gathered; subject is set by the
 // user to override automatic organisation (empty = automatic). summary and topics are written by
-// the optional AI layer: a short summary, and subject labels chosen by meaning.
-function render({ title, url, dateGathered, content, siteName, tags, subject, summary, topics: aiTopics }) {
+// the optional AI layer: a short summary, and subject labels chosen by meaning. summaryBy says
+// which engine wrote the summary: 'apple' (on-device Apple Intelligence) or 'claude'.
+function render({ title, url, dateGathered, content, siteName, tags, subject, summary, summaryBy, topics: aiTopics }) {
   const opt = (name, v) => (v ? `<meta name="gatherer:${name}" content="${esc(v)}">\n` : '');
   return `<!doctype html>\n<html><head><meta charset="utf-8"><title>${esc(title)}</title>\n` +
     `<meta name="gatherer:url" content="${esc(url)}">\n<meta name="gatherer:date-gathered" content="${esc(dateGathered)}">\n` +
     opt('site-name', siteName) + opt('tags', (tags || []).join(', ')) + opt('subject', subject) +
-    opt('summary', summary) + opt('topics', (aiTopics || []).join(', ')) +
+    opt('summary', summary) + opt('summary-by', summary ? summaryBy : '') + opt('topics', (aiTopics || []).join(', ')) +
     `</head><body>${content}</body></html>\n`;
 }
 
@@ -55,7 +56,7 @@ function parse(id, html) {
   return {
     id, title: t ? unesc(t[1]) : 'Untitled', url: metaVal('url'), dateGathered: metaVal('date-gathered'),
     siteName: metaVal('site-name'), tags: csv(metaVal('tags')), subject: metaVal('subject'),
-    summary: metaVal('summary'), topics: csv(metaVal('topics')), content: b ? b[1] : '',
+    summary: metaVal('summary'), summaryBy: metaVal('summary-by'), topics: csv(metaVal('topics')), content: b ? b[1] : '',
   };
 }
 
@@ -159,7 +160,8 @@ function read(id) {
 // saved, so editing the note keeps it current.
 function get(id) {
   const note = read(id);
-  if (note.summary) return { ...note, summarySource: 'ai' };
+  // Summaries from before summary-by existed were all written by Claude.
+  if (note.summary) return { ...note, summarySource: note.summaryBy || 'claude' };
   const local = localSummary({ title: note.title, text: topics.htmlToText(note.content) });
   return { ...note, summary: local, summarySource: local ? 'local' : '' };
 }
@@ -202,10 +204,13 @@ function setSubject(id, subject) {
 
 // Store what the AI produced. Either field may be omitted to leave it as it is; an empty summary
 // clears it (the note falls back to the local summary).
-function setAi(id, { summary: text, topics: labels } = {}) {
+function setAi(id, { summary: text, by, topics: labels } = {}) {
   const cur = read(id);
   const next = { ...cur };
-  if (text !== undefined) next.summary = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+  if (text !== undefined) {
+    next.summary = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+    next.summaryBy = next.summary && by ? String(by) : '';
+  }
   if (labels !== undefined) next.topics = cleanTags(labels).slice(0, 3);
   writeAtomic(fileFor(id), render(next));
   return summary(next);

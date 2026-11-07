@@ -3,8 +3,10 @@
 //   NoteSummary = { id, title, url, dateGathered, siteName, subject, pinnedSubject }
 //                 (dateGathered: ISO 8601; subject: inferred or pinned; pinnedSubject: '' when automatic)
 //   Note        = { id, title, url, dateGathered, siteName, tags, subject, content, summary, summarySource, topics }
-//                 (content: sanitized HTML body; summarySource: 'ai' | 'local' | ''; topics: AI subject labels)
-//   Settings    = { hasKey, keySource: 'settings'|'environment'|'', keyHint, autoSummarize }
+//                 (content: sanitized HTML body; summarySource: 'apple' | 'claude' | 'local' | ''; topics: AI subject labels)
+//   Settings    = { hasKey, keySource: 'settings'|'environment'|'', keyHint, autoSummarize,
+//                   provider: 'auto'|'apple'|'claude'|'off', engine: 'apple'|'claude'|'' (what runs now),
+//                   engineReason, appleAvailable, appleReason }
 //
 //   notes.list()             -> NoteSummary[]  newest first
 //   notes.get(id)            -> Note
@@ -18,7 +20,7 @@
 //   notes.aiBusy()           -> id[]           notes whose AI summary is being written
 //   ai.summarize(id)         -> Note           (re)write the AI summary and subject labels
 //   ai.organize()            -> NoteSummary[]  regroup all automatic notes by meaning
-//   settings.get() / setKey(key) / setAutoSummarize(bool) -> Settings   ('' key removes it)
+//   settings.get() / setKey(key) / setAutoSummarize(bool) / setProvider(p) -> Settings   ('' key removes it)
 //   onNoteChanged(fn({id}))  main updated a note in the background
 //   onAiStatus(fn({id, busy, error?}))
 //
@@ -44,6 +46,7 @@ contextBridge.exposeInMainWorld('gatherer', {
     get: () => ipcRenderer.invoke('settings:get'),
     setKey: (key) => ipcRenderer.invoke('settings:setKey', key),
     setAutoSummarize: (on) => ipcRenderer.invoke('settings:setAutoSummarize', on),
+    setProvider: (p) => ipcRenderer.invoke('settings:setProvider', p),
   },
   onNoteChanged: (fn) => ipcRenderer.on('notes:changed', (_e, p) => fn(p)),
   onAiStatus: (fn) => ipcRenderer.on('ai:status', (_e, p) => fn(p)),

@@ -5,7 +5,8 @@ const storage = require('./storage');
 const { scrape, normalizeUrl } = require('./scraper');
 const images = require('./images');
 const settings = require('./settings');
-const ai = require('./ai');
+const ai = require('./intelligence');
+const claude = require('./claude');
 
 protocol.registerSchemesAsPrivileged([{ scheme: images.SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
@@ -61,13 +62,11 @@ const broadcast = (channel, payload) => {
 const inFlight = new Map(); // id -> Promise
 function enrich(id) {
   if (inFlight.has(id)) return inFlight.get(id);
-  const key = settings.apiKey();
-  if (!key) return Promise.reject(new Error('Add an Anthropic API key in Settings to use AI summaries.'));
   broadcast('ai:status', { id, busy: true });
   const p = (async () => {
     const subjects = [...new Set(storage.list().map((n) => n.subject).filter((s) => s && s !== 'Other'))];
-    const { summary, topics } = await ai.summarizeNote(key, { ...storage.textOf(id), subjects });
-    storage.setAi(id, { summary, topics });
+    const { summary, topics, by } = await ai.summarize({ ...storage.textOf(id), subjects });
+    storage.setAi(id, { summary, by, topics });
     return storage.get(id);
   })().then((note) => {
     broadcast('ai:status', { id, busy: false });
@@ -101,7 +100,9 @@ app.whenReady().then(() => {
       if (local !== note.content) storage.save(note.id, { content: local });
     } catch (e) { console.warn('[images] could not save images locally:', e.message); }
     // The AI summary arrives in the background; the note opens right away with a local one.
-    if (settings.apiKey() && settings.publicSettings().autoSummarize) enrich(note.id).catch(() => {});
+    if (settings.publicSettings().autoSummarize) {
+      ai.current().then(({ engine }) => { if (engine) enrich(note.id).catch(() => {}); }, () => {});
+    }
     return storage.get(note.id);
   });
   handle('notes:save', (id, data) => storage.save(id, data));
@@ -109,33 +110,39 @@ app.whenReady().then(() => {
   handle('notes:delete', (id) => storage.remove(id));
   handle('notes:aiBusy', () => [...inFlight.keys()]);
 
-  handle('settings:get', () => settings.publicSettings());
+  // Settings plus what the AI layer can do right now, for the renderer.
+  const aiSettings = async (refresh) => {
+    if (refresh) await require('./apple').status({ refresh: true });
+    const { engine, apple, reason } = await ai.current();
+    return { ...settings.publicSettings(), engine: engine || '', engineReason: reason, appleAvailable: apple.available, appleReason: apple.reason };
+  };
+  handle('settings:get', () => aiSettings(true));
   handle('settings:setKey', async (key) => {
     const k = String(key || '').trim();
     if (k) {
-      try { await ai.checkKey(k); }
+      try { await claude.checkKey(k); }
       catch (e) {
         // Only a definite rejection blocks saving; being offline right now should not.
         if (e instanceof require('@anthropic-ai/sdk').AuthenticationError) throw new Error('That API key was rejected by Anthropic.');
         console.warn('[ai] could not verify key:', e && e.message);
       }
     }
-    return settings.setApiKey(k);
+    settings.setApiKey(k);
+    return aiSettings();
   });
-  handle('settings:setAutoSummarize', (on) => settings.setAutoSummarize(on));
+  handle('settings:setAutoSummarize', (on) => { settings.setAutoSummarize(on); return aiSettings(); });
+  handle('settings:setProvider', (p) => { settings.setProvider(p); return aiSettings(); });
 
   handle('ai:summarize', (id) => enrich(id));
   // Regroup every automatic note by meaning in one pass. Pinned notes keep their subject and
   // lend their labels to the AI.
   handle('ai:organize', async () => {
-    const key = settings.apiKey();
-    if (!key) throw new Error('Add an Anthropic API key in Settings to group notes by meaning.');
     const all = storage.briefs();
     const pinned = [...new Set(all.map((n) => n.pinned).filter(Boolean))];
     const auto = all.filter((n) => !n.pinned);
     if (!auto.length) return storage.list();
     let map;
-    try { map = await ai.organizeNotes(key, auto, pinned); }
+    try { map = await ai.organize(auto, pinned); }
     catch (e) { console.warn('[ai] regroup failed:', e && e.message); throw new Error(ai.describeError(e)); }
     for (const n of auto) {
       const s = map.get(n.id);
