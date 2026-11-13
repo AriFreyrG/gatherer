@@ -7,6 +7,9 @@
     <!-- Gathering pages and their images. -->
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- The browser extension hands pages to the app on 127.0.0.1 (loopback only). -->
+    <key>com.apple.security.network.server</key>
+    <true/>
     <!-- Folders the user picks: File > Import Notes reads one, export and sync write to one. -->
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>

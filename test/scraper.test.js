@@ -37,3 +37,21 @@ test('still removes share bars, ads, related links and comment threads', () => {
     assert.ok(!content.includes(s), `kept clutter: ${s}`);
   }
 });
+
+test('script-built pages fall back to the hidden browser window', async () => {
+  const { gather } = require('../src/main/gather');
+  const http = require('node:http');
+  const shell = '<!doctype html><html><head><title>App</title></head><body><div id="root"></div><script>render()</script></body></html>';
+  const server = http.createServer((_q, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(shell); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/story`;
+  try {
+    await assert.rejects(gather(url, {}), /Could not find any readable content/);
+    let rendered = null;
+    const render = async (u) => { rendered = u; return { html: page(`<article><h1>Built by script</h1>${para('Rendered paragraph one.')}${para('Rendered paragraph two.')}</article>`), finalUrl: u }; };
+    const note = await gather(url, { render });
+    assert.strictEqual(rendered, url);
+    assert.ok(note.content.includes('Rendered paragraph two'));
+    assert.ok(note.html.includes('Built by script'), 'offline copy comes from the rendered page');
+  } finally { server.close(); }
+});
