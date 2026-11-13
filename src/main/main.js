@@ -4,9 +4,9 @@ const path = require('path');
 const fs = require('fs');
 const storage = require('./storage');
 const { normalizeUrl } = require('./scraper');
-const { gather } = require('./gather');
+const { gather, fromHtml } = require('./gather');
 const { renderPage } = require('./render');
-const reddit = require('./reddit');
+const pageInbox = require('./page-inbox');
 const images = require('./images');
 const exporter = require('./export');
 const syncService = require('./sync-service');
@@ -57,6 +57,21 @@ function receiveCaptureLink(raw) {
     else { if (mainWin.isMinimized()) mainWin.restore(); mainWin.show(); mainWin.focus(); }
   }
   deliverCaptures();
+}
+
+// Pages the browser extension sends with their rendered HTML. The page goes through the usual
+// capture path; when the renderer asks to create its note, the HTML is used instead of a fetch.
+const sentPages = new Map(); // normalized url -> { html, at }
+function receivePage({ url, title, html }) {
+  const now = Date.now();
+  for (const [u, p] of sentPages) if (now - p.at > 10 * 60000) sentPages.delete(u);
+  sentPages.set(normalizeUrl(url), { html, at: now });
+  receiveCaptureLink(capture.captureLink(url, title));
+}
+function takeSentPage(url) {
+  const p = sentPages.get(url);
+  if (p) sentPages.delete(url);
+  return p && Date.now() - p.at < 10 * 60000 ? p : null;
 }
 
 app.on('open-url', (e, url) => { e.preventDefault(); receiveCaptureLink(url); });
@@ -254,7 +269,10 @@ app.whenReady().then(() => {
       console.log(`[archive] saved ${id}: ${snap.resources} resources, ${Math.round(snap.html.length / 1024)} KB`);
     } catch (e) { console.warn('[archive] could not save offline copy:', e.message); }
   };
-  const gatherPage = (url) => gather(url, { redditCreds: settings.redditCreds, render: renderPage });
+  const gatherPage = async (url) => {
+    const sent = takeSentPage(url);
+    return sent ? fromHtml(sent.html, url) : gather(url, { render: renderPage });
+  };
   handle('notes:list', () => storage.list());
   handle('notes:get', (id) => storage.get(id));
   handle('notes:search', (query) => storage.search(typeof query === 'string' ? query : ''));
@@ -339,19 +357,6 @@ app.whenReady().then(() => {
     return settings.setApiKey(k);
   });
   handle('settings:setAutoSummarize', (on) => settings.setAutoSummarize(on));
-  handle('settings:setReddit', async (creds) => {
-    const clientId = String((creds && creds.clientId) || '').trim();
-    const secret = String((creds && creds.secret) || '').trim();
-    if (clientId) {
-      try { await reddit.checkKey({ clientId, secret }); }
-      catch (e) {
-        // Only a definite rejection blocks saving; being offline right now should not.
-        if (e instanceof reddit.RedditAuthError) throw new Error('Reddit rejected that client ID and secret.');
-        console.warn('[reddit] could not verify key:', e && e.message);
-      }
-    }
-    return settings.setReddit({ clientId, secret });
-  });
 
   handle('ai:summarize', (id) => enrich(id));
   // Regroup every automatic note by meaning in one pass. Pinned notes keep their subject and
@@ -390,6 +395,9 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(ICON); // packaged builds use icon.icns
   buildMenu();
   createWindow();
+  pageInbox.start({ onPage: receivePage })
+    .then(() => console.log(`[inbox] listening for the browser extension on 127.0.0.1:${pageInbox.PORT}`))
+    .catch((e) => console.warn('[inbox] browser extension pages unavailable:', e.message));
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

@@ -207,23 +207,6 @@
       <label class="check"><input id="auto-summarize" type="checkbox"> Summarize new pages automatically</label>
       <div id="settings-msg" class="small" hidden></div>
     </section>
-    <section class="field">
-      <label for="reddit-id"><b>Reddit posts</b></label>
-      <p class="muted small">Reddit only lets apps read posts through its official API, with a free app key.
-        Create an app at <a href="https://www.reddit.com/prefs/apps" id="reddit-apps-link">reddit.com/prefs/apps</a>
-        (choose “script”, any redirect URI such as http://localhost), then paste the client ID (the code under the app’s name) and the secret here.
-        Gatherer only reads public posts and comments with it. The secret is stored encrypted in your system keychain.</p>
-      <div id="reddit-current" class="muted small"></div>
-      <div class="row">
-        <input id="reddit-id" type="text" placeholder="Client ID" autocomplete="off" spellcheck="false">
-        <input id="reddit-secret" type="password" placeholder="Secret" autocomplete="off" spellcheck="false">
-      </div>
-      <div class="row">
-        <button id="reddit-save" class="primary" type="button">Save Reddit key</button>
-        <button id="reddit-remove" type="button" class="danger" hidden>Remove</button>
-      </div>
-      <div id="reddit-msg" class="small" hidden></div>
-    </section>
     <div class="actions"><button type="button" id="settings-close">Done</button></div>
   </form>
 </div>

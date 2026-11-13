@@ -8,8 +8,7 @@
 //                  archive: { savedAt, bytes } or null when there is no offline copy;
 //                  summarySource: 'ai' | 'local' | ''; topics: AI subject labels)
 //   The offline copy of a note is served at gatherer-asset://<id>/page.html (scripts and network blocked).
-//   Settings    = { hasKey, keySource: 'settings'|'environment'|'', keyHint, autoSummarize,
-//                   reddit: { hasKey, source: 'settings'|'environment'|'', hint } }
+//   Settings    = { hasKey, keySource: 'settings'|'environment'|'', keyHint, autoSummarize }
 //
 //   notes.list()             -> NoteSummary[]  newest first
 //   notes.get(id)            -> Note
@@ -30,7 +29,6 @@
 //   ai.summarize(id)         -> Note           (re)write the AI summary and subject labels
 //   ai.organize()            -> NoteSummary[]  regroup all automatic notes by meaning
 //   settings.get() / setKey(key) / setAutoSummarize(bool) -> Settings   ('' key removes it)
-//   settings.setReddit({ clientId, secret }) -> Settings   ('' clientId removes it)
 //   onNoteChanged(fn({id}))  the AI updated one note in the background
 //   onAiStatus(fn({id, busy, error?}))
 //   onNotesChanged(fn)       fn(ids) after sync or File > Import Notes changed, added or removed notes
@@ -77,7 +75,6 @@ contextBridge.exposeInMainWorld('gatherer', {
     get: () => ipcRenderer.invoke('settings:get'),
     setKey: (key) => ipcRenderer.invoke('settings:setKey', key),
     setAutoSummarize: (on) => ipcRenderer.invoke('settings:setAutoSummarize', on),
-    setReddit: (creds) => ipcRenderer.invoke('settings:setReddit', creds),
   },
   // notes:changed carries { id } from the AI, an id[] from sync, and nothing from an import.
   onNoteChanged: (fn) => ipcRenderer.on('notes:changed', (_e, p) => { if (p && !Array.isArray(p) && p.id) fn(p); }),

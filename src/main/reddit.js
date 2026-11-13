@@ -1,22 +1,16 @@
-// Reddit posts through Reddit's official API. Reddit serves its web pages as a script shell
-// and walls off its .json and old.reddit pages for unknown clients, so a post is read with an
-// app key the user registers at reddit.com/prefs/apps. Application-only OAuth: nothing is
-// posted and no Reddit account is signed in. No Electron deps.
-const { JSDOM } = require('jsdom');
-const crypto = require('crypto');
+// Reddit posts, read from the page as a browser shows it. Reddit serves post pages as a script
+// shell and walls off its .json and old.reddit pages for apps, and its API now needs Reddit's
+// approval, so Gatherer reads the page your browser already rendered (sent by the extension)
+// or one rendered in Gatherer's hidden window. Handles the current site (<shreddit-post>,
+// <shreddit-comment>) and old.reddit.com. No Electron deps.
+const { JSDOM, VirtualConsole } = require('jsdom');
 const { sanitize } = require('./scraper');
 
-const UA = 'desktop:com.gatherer.app:v0.1 (Gatherer web notebook)';
 const BASE = 'https://www.reddit.com';
-const API = 'https://oauth.reddit.com';
-const MAX_TOP = 40;     // top-level comments kept
-const MAX_DEPTH = 4;    // reply levels kept under each one
-const MAX_TOTAL = 200;  // comments kept in all
+const MAX_TOTAL = 300; // comments kept in all
+const HOSTS = /^(?:www\.|old\.|new\.|np\.|m\.|sh\.)?reddit\.com$/i;
 
-const HOSTS = /^(?:www\.|old\.|new\.|np\.|m\.|i\.|sh\.)?reddit\.com$/i;
-
-// { id, share } for a Reddit post link, or null. share is set for /r/<sub>/s/<code> links,
-// which only redirect to the real post.
+// { id } for a Reddit post link, { share } for a /r/<sub>/s/<code> share link, or null.
 function parsePostUrl(input) {
   let u;
   try { u = new URL(input); } catch { return null; }
@@ -34,175 +28,176 @@ function parsePostUrl(input) {
   return null;
 }
 
-const isRedditHost = (url) => { try { const h = new URL(url).hostname; return HOSTS.test(h) || h === 'redd.it'; } catch { return false; } };
+const isRedditUrl = (url) => { try { const h = new URL(url).hostname; return HOSTS.test(h) || h === 'redd.it'; } catch { return false; } };
 
-class RedditAuthError extends Error {}
+/* ---------- reading the page ---------- */
 
-const tokens = new Map(); // clientId -> { token, expires }
+const text = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+const num = (v) => { const n = parseInt(String(v || '').replace(/[^\d-]/g, ''), 10); return Number.isFinite(n) ? n : null; };
+const iso = (v) => { if (!v) return ''; const d = new Date(/^\d+(\.\d+)?$/.test(v) ? Number(v) * (Number(v) < 1e12 ? 1000 : 1) : v); return isNaN(d) ? '' : d.toISOString(); };
+// The element's own descendants matching sel, not those inside a nested comment.
+const own = (el, sel, scope) => [...el.querySelectorAll(sel)].filter((x) => x.closest(scope) === el);
 
-async function getToken({ clientId, secret }, fetchImpl = fetch) {
-  const cached = tokens.get(clientId);
-  if (cached && cached.expires > Date.now() + 60000) return cached.token;
-  // A "script" or "web app" key has a secret; an "installed app" key has none and names a device.
-  const body = secret
-    ? new URLSearchParams({ grant_type: 'client_credentials' })
-    : new URLSearchParams({ grant_type: 'https://oauth.reddit.com/grants/installed_client', device_id: deviceId(clientId) });
-  let res;
-  try {
-    res = await fetchImpl(`${BASE}/api/v1/access_token`, {
-      method: 'POST', body, signal: AbortSignal.timeout(20000),
-      headers: {
-        Authorization: 'Basic ' + Buffer.from(`${clientId}:${secret || ''}`).toString('base64'),
-        'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    });
-  } catch (e) { throw new Error(`Could not reach Reddit (${e.name === 'TimeoutError' ? 'timeout' : (e.cause && e.cause.code) || e.message})`); }
-  let data = {};
-  try { data = await res.json(); } catch { /* handled below */ }
-  if (res.status === 401 || res.status === 403 || data.error === 'invalid_client' || data.error === 'unauthorized_client' || data.error === 'unsupported_grant_type') {
-    throw new RedditAuthError('Reddit rejected the app key in Settings. Check the client ID and secret.');
+function images(root, base) {
+  const out = [];
+  for (const img of root.querySelectorAll('img')) {
+    const raw = img.getAttribute('src') || (img.getAttribute('srcset') || '').split(',').pop().trim().split(/\s+/)[0];
+    let src;
+    try { src = new URL(raw, base).href; } catch { continue; }
+    if (!/^https?:/.test(src) || /\/(?:avatars?|emoji|communityIcon|snoovatar)|styles\.redditmedia|static\/|award/i.test(src)) continue;
+    const w = num(img.getAttribute('width'));
+    if (w !== null && w < 80) continue;
+    if (!out.includes(src)) out.push(src);
   }
-  if (!res.ok || !data.access_token) throw new Error(`Reddit sign-in failed (HTTP ${res.status}${data.error ? ', ' + data.error : ''})`);
-  tokens.set(clientId, { token: data.access_token, expires: Date.now() + (Number(data.expires_in) || 3600) * 1000 });
-  return data.access_token;
+  return out;
 }
 
-// Stable per key, so Reddit sees one device rather than a new one every launch.
-function deviceId(clientId) { return crypto.createHash('sha256').update('gatherer:' + clientId).digest('hex').slice(0, 30); }
-
-// Share links (/r/<sub>/s/<code>) redirect to the post; follow just that one hop.
-async function resolveShare(url, fetchImpl = fetch) {
-  try {
-    const res = await fetchImpl(url, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(15000), headers: { 'User-Agent': UA } });
-    const loc = res.headers.get('location');
-    const p = loc && parsePostUrl(new URL(loc, url).href);
-    if (p && p.id) return p.id;
-  } catch { /* fall through */ }
-  throw new Error('Could not open this Reddit share link. Open it in your browser and paste the full post link instead.');
+// The current site: <shreddit-post> and nested <shreddit-comment> elements.
+function readNew(doc, base) {
+  const post = doc.querySelector('shreddit-post');
+  if (!post) return null;
+  const a = (n) => post.getAttribute(n) || '';
+  const body = post.querySelector('[slot="text-body"]');
+  const mediaBox = post.querySelector('[slot="post-media-container"], gallery-carousel, shreddit-aspect-ratio');
+  const type = a('post-type');
+  const href = a('content-href');
+  const p = {
+    title: a('post-title') || text(post.querySelector('[slot="title"]')) || text(doc.querySelector('h1')),
+    sub: a('subreddit-prefixed-name').replace(/^r\//, '') || a('subreddit-name'),
+    author: a('author'),
+    created: iso(a('created-timestamp')),
+    score: num(a('score')),
+    comments: num(a('comment-count')),
+    flair: text(post.querySelector('shreddit-post-flair, flair-tag, [slot="post-flair"]')),
+    bodyHtml: body ? body.innerHTML : '',
+    images: mediaBox ? images(mediaBox, base) : [],
+    video: type === 'video' || !!post.querySelector('shreddit-player, shreddit-player-2'),
+    link: type === 'link' && href && !isRedditUrl(href) ? href : '',
+    permalink: a('permalink'),
+  };
+  const comment = (el) => {
+    const t = own(el, 'faceplate-timeago[ts], time[datetime]', 'shreddit-comment')[0];
+    return {
+      author: el.getAttribute('author') || '',
+      score: num(el.getAttribute('score')),
+      created: iso(el.getAttribute('created') || (t && (t.getAttribute('ts') || t.getAttribute('datetime')))),
+      deleted: el.hasAttribute('is-comment-deleted') || el.getAttribute('author') === '[deleted]',
+      bodyHtml: (own(el, '[slot="comment"]', 'shreddit-comment')[0] || {}).innerHTML || '',
+      replies: [],
+    };
+  };
+  // Build the tree from each comment's nearest comment ancestor.
+  const all = [...doc.querySelectorAll('shreddit-comment')];
+  const nodes = new Map(all.map((el) => [el, comment(el)]));
+  const top = [];
+  for (const el of all) {
+    const parent = el.parentElement && el.parentElement.closest('shreddit-comment');
+    (parent && nodes.has(parent) ? nodes.get(parent).replies : top).push(nodes.get(el));
+  }
+  p.tree = top;
+  return p;
 }
 
-async function api(path, creds, fetchImpl) {
-  const token = await getToken(creds, fetchImpl);
-  let res;
-  try {
-    res = await fetchImpl(API + path, { signal: AbortSignal.timeout(20000), headers: { Authorization: `bearer ${token}`, 'User-Agent': UA } });
-  } catch (e) { throw new Error(`Could not reach Reddit (${e.name === 'TimeoutError' ? 'timeout' : (e.cause && e.cause.code) || e.message})`); }
-  if (res.status === 401) { tokens.delete(creds.clientId); throw new RedditAuthError('Reddit rejected the app key in Settings. Check the client ID and secret.'); }
-  if (res.status === 403) throw new Error('Reddit says this post is private or quarantined, so it can\'t be gathered.');
-  if (res.status === 404) throw new Error('Reddit could not find this post. It may have been removed.');
-  if (!res.ok) throw new Error(`Reddit responded with HTTP ${res.status}`);
-  return res.json();
+// old.reddit.com: .thing.link and nested .thing.comment.
+function readOld(doc, base) {
+  const post = doc.querySelector('#siteTable .thing.link, .thing.link');
+  if (!post) return null;
+  const a = (n) => post.getAttribute(n) || '';
+  const url = a('data-url');
+  const p = {
+    title: text(post.querySelector('a.title')),
+    sub: a('data-subreddit'),
+    author: a('data-author'),
+    created: iso(a('data-timestamp')),
+    score: num(a('data-score')),
+    comments: num(a('data-comments-count')),
+    flair: text(post.querySelector('.linkflairlabel')),
+    bodyHtml: (post.querySelector('.usertext-body .md') || {}).innerHTML || '',
+    images: [],
+    video: false,
+    link: url && !isRedditUrl(new URL(url, base).href) ? new URL(url, base).href : '',
+    permalink: a('data-permalink'),
+  };
+  if (p.link && /\.(jpe?g|png|gif|webp)(\?|$)/i.test(p.link)) { p.images = [p.link]; p.link = ''; }
+  const read = (table) => [...(table ? table.children : [])].filter((el) => el.matches('.thing.comment')).map((el) => ({
+    author: el.getAttribute('data-author') || '',
+    score: num(text(el.querySelector(':scope > .entry .score.unvoted')) || el.getAttribute('data-score')),
+    created: iso((el.querySelector(':scope > .entry time') || { getAttribute: () => '' }).getAttribute('datetime')),
+    deleted: el.classList.contains('deleted'),
+    bodyHtml: (el.querySelector(':scope > .entry .usertext-body .md') || {}).innerHTML || '',
+    replies: read(el.querySelector(':scope > .child > .sitetable')),
+  }));
+  p.tree = read(doc.querySelector('.commentarea > .sitetable'));
+  return p;
 }
 
-/* ---------- rendering ---------- */
+/* ---------- writing the note ---------- */
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const decode = (s) => String(s || '').replace(/&amp;/g, '&'); // preview URLs arrive entity-escaped without raw_json
-const date = (utc) => { try { return new Date(utc * 1000).toISOString().slice(0, 10); } catch { return ''; } };
-const plural = (n, w) => `${Number(n || 0).toLocaleString('en-US')} ${w}${Number(n) === 1 ? '' : 's'}`;
+const day = (s) => (s ? s.slice(0, 10) : '');
+const count = (n, one, many) => (n === null ? '' : `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`);
 const userLink = (name) => (!name || name === '[deleted]') ? '<em>[deleted]</em>' : `<a href="${BASE}/user/${encodeURIComponent(name)}">u/${esc(name)}</a>`;
-const img = (src, alt = '') => (src && /^https?:/.test(src) ? `<p><img src="${esc(decode(src))}" alt="${esc(alt)}"></p>` : '');
+const when = (s) => (s ? `<time datetime="${esc(s)}">${day(s)}</time>` : '');
 
-function media(post) {
-  const parts = [];
-  if (post.is_gallery && post.gallery_data && post.media_metadata) {
-    for (const item of post.gallery_data.items || []) {
-      const m = post.media_metadata[item.media_id];
-      const src = m && m.s && (m.s.u || m.s.gif);
-      if (src) parts.push(img(src, item.caption || ''), item.caption ? `<p><em>${esc(item.caption)}</em></p>` : '');
-    }
-    return parts.join('');
-  }
-  const preview = post.preview && post.preview.images && post.preview.images[0] && post.preview.images[0].source;
-  const video = post.media && post.media.reddit_video;
-  if (post.post_hint === 'image' || /\.(jpe?g|png|gif|webp)(\?|$)/i.test(post.url || '')) {
-    parts.push(img(post.url_overridden_by_dest || post.url));
-  } else if (video) {
-    parts.push(img(preview && preview.url));
-    parts.push(`<p><a href="${esc(video.fallback_url)}">Watch the video</a> (${Math.round(video.duration || 0)} s)</p>`);
-  } else if (!post.is_self && post.url) {
-    parts.push(img(preview && preview.url));
-    const link = abs(post.url_overridden_by_dest || post.url);
-    if (link) parts.push(`<p>Link: <a href="${esc(link)}">${esc(link)}</a></p>`);
-  }
-  return parts.join('');
-}
-
-const abs = (v) => { try { return new URL(decode(v), BASE).href; } catch { return null; } };
-
-function renderComments(children, depth, budget) {
+function comments(list, budget) {
   const out = [];
-  let more = 0;
-  for (const c of children || []) {
-    if (c.kind === 'more') { more += (c.data && c.data.count) || 0; continue; }
-    if (c.kind !== 't1' || !c.data) continue;
-    const d = c.data;
-    if (d.stickied && d.author === 'AutoModerator') continue;
-    if (budget.left <= 0 || (depth === 0 && out.length >= MAX_TOP)) { more += 1; continue; }
+  for (const c of list) {
+    if (budget.left <= 0) break;
+    if (c.deleted && !c.replies.length) continue;
     budget.left -= 1;
-    const head = `<p><strong>${userLink(d.author)}</strong> · ${plural(d.score, 'point')} · <time datetime="${new Date(d.created_utc * 1000).toISOString()}">${date(d.created_utc)}</time>${d.edited ? ' · edited' : ''}</p>`;
-    const body = d.body_html || (d.body ? `<p>${esc(d.body)}</p>` : '');
-    let replies = '';
-    const kids = d.replies && d.replies.data && d.replies.data.children;
-    if (kids && kids.length) {
-      if (depth + 1 < MAX_DEPTH) replies = renderComments(kids, depth + 1, budget);
-      else replies = `<p><small>${kids.length === 1 ? '1 more reply' : `${kids.length} more replies`} on Reddit</small></p>`;
-    }
-    out.push(`<blockquote>${head}${body}${replies}</blockquote>`);
+    const meta = [count(c.score, 'point', 'points'), when(c.created)].filter(Boolean).join(' · ');
+    out.push(`<blockquote><p><strong>${userLink(c.author)}</strong>${meta ? ' · ' + meta : ''}</p>`
+      + `${c.deleted ? '<p><em>[deleted]</em></p>' : c.bodyHtml}${comments(c.replies, budget)}</blockquote>`);
   }
-  if (more) out.push(`<p><small>${plural(more, 'more comment')} on Reddit</small></p>`);
   return out.join('');
 }
 
 // Makes Reddit's own HTML safe and self-contained: absolute links, sanitized.
-function finish(html) {
+function finish(html, base) {
   const body = new JSDOM(`<body>${html}</body>`).window.document.body;
-  for (const a of body.querySelectorAll('a[href]')) { const u = abs(a.getAttribute('href')); if (u) a.setAttribute('href', u); else a.removeAttribute('href'); }
+  for (const a of body.querySelectorAll('a[href]')) {
+    try { a.setAttribute('href', new URL(a.getAttribute('href'), base).href); } catch { a.removeAttribute('href'); }
+  }
   return sanitize(body.innerHTML);
 }
 
-// listing: the [post, comments] pair /comments/<id> returns.
-function render(listing) {
-  const post = listing && listing[0] && listing[0].data && listing[0].data.children && listing[0].data.children[0] && listing[0].data.children[0].data;
-  if (!post) throw new Error('Reddit returned no post for this link');
-  const src = (post.crosspost_parent_list && post.crosspost_parent_list[0]) || post;
-  const url = BASE + post.permalink;
-  const sub = post.subreddit || '';
-  const flags = [post.link_flair_text, post.over_18 && 'NSFW', post.spoiler && 'Spoiler'].filter(Boolean).map(esc).join(' · ');
-  const byline = `<p><a href="${BASE}/r/${encodeURIComponent(sub)}">r/${esc(sub)}</a> · Posted by ${userLink(post.author)} on `
-    + `<time datetime="${new Date(post.created_utc * 1000).toISOString()}">${date(post.created_utc)}</time> · ${plural(post.score, 'point')} · ${plural(post.num_comments, 'comment')}`
-    + `${flags ? ' · ' + flags : ''}</p>`;
-  const cross = src !== post ? `<p><em>Crossposted from <a href="${BASE}${esc(src.permalink)}">r/${esc(src.subreddit)}</a></em></p>` : '';
-  const text = src.selftext_html || (src.selftext ? `<p>${esc(src.selftext)}</p>` : '');
-  const comments = renderComments(listing[1] && listing[1].data && listing[1].data.children, 0, { left: MAX_TOTAL });
-  const html = `<h1>${esc(post.title)}</h1>${byline}${cross}${media(src)}${text}`
-    + (comments ? `<hr><h2>Top comments</h2>${comments}` : '');
-  const content = finish(html);
+function toNote(p, pageUrl) {
+  const url = p.permalink ? new URL(p.permalink, BASE).href : pageUrl;
+  const sub = p.sub || '';
+  const by = [
+    sub && `<a href="${BASE}/r/${encodeURIComponent(sub)}">r/${esc(sub)}</a>`,
+    `Posted by ${userLink(p.author)}${p.created ? ' on ' + when(p.created) : ''}`,
+    count(p.score, 'point', 'points'), count(p.comments, 'comment', 'comments'), p.flair && esc(p.flair),
+  ].filter(Boolean).join(' · ');
+  const media = p.images.map((src) => `<p><img src="${esc(src)}" alt=""></p>`).join('')
+    + (p.video ? `<p><a href="${esc(url)}">Watch the video on Reddit</a></p>` : '')
+    + (p.link ? `<p>Link: <a href="${esc(p.link)}">${esc(p.link)}</a></p>` : '');
+  const thread = comments(p.tree, { left: MAX_TOTAL });
+  const html = `<p>${by}</p>${media}${p.bodyHtml}${thread ? `<hr><h2>Comments</h2>${thread}` : ''}`;
+  const content = finish(html, BASE);
   return {
-    title: String(post.title || '').trim() || `r/${sub}`,
+    title: p.title || (sub ? `r/${sub}` : 'Reddit post'),
     content,
     url,
     siteName: 'Reddit',
     tags: sub ? [sub] : [],
-    // A standalone page for the offline copy, so it is made from the same data as the note.
-    html: `<!doctype html><html><head><meta charset="utf-8"><title>${esc(post.title)}</title>
-<style>body{font:16px/1.55 -apple-system,system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;color:#1c1c1c}
+    // A clean standalone page for the offline copy: Reddit's own page needs its scripts to show anything.
+    html: `<!doctype html><html><head><meta charset="utf-8"><title>${esc(p.title)}</title>
+<style>h1{font-size:1.6rem;line-height:1.25}body{font:16px/1.55 -apple-system,system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;color:#1c1c1c}
 blockquote{margin:.6rem 0 .6rem .4rem;padding-left:.9rem;border-left:2px solid #d0d3d6}img{max-width:100%;height:auto}
-a{color:#0b57d0}small,time{color:#666}</style></head><body><article>${content}</article></body></html>`,
+a{color:#0b57d0}time{color:#666}</style></head><body><article><h1>${esc(p.title)}</h1>${content}</article></body></html>`,
     finalUrl: url,
   };
 }
 
-// The note for a Reddit post link. creds: { clientId, secret }.
-async function gather(input, creds, fetchImpl = fetch) {
-  const p = parsePostUrl(input);
-  if (!p) throw new Error('This Reddit link is not a post');
-  const id = p.id || await resolveShare(p.share, fetchImpl);
-  const listing = await api(`/comments/${id}?raw_json=1&sort=top&limit=${MAX_TOTAL}&depth=${MAX_DEPTH + 1}`, creds, fetchImpl);
-  return render(listing);
+// The note for a rendered Reddit post page, or null when the page holds no post (a sign-in
+// wall, a listing, an error page).
+function fromPage(html, pageUrl) {
+  if (!/<shreddit-post\b|class="[^"]*\bthing\b[^"]*\blink\b/i.test(html)) return null;
+  const doc = new JSDOM(html, { url: pageUrl, virtualConsole: new VirtualConsole() }).window.document;
+  const p = readNew(doc, pageUrl) || readOld(doc, pageUrl);
+  if (!p || !p.title) return null;
+  return toNote(p, pageUrl);
 }
 
-// Throws RedditAuthError when Reddit definitely rejects the key.
-async function checkKey(creds, fetchImpl = fetch) { tokens.delete(creds.clientId); await getToken(creds, fetchImpl); }
-
-module.exports = { parsePostUrl, isRedditHost, gather, render, checkKey, RedditAuthError, UA };
+module.exports = { parsePostUrl, isRedditUrl, fromPage };
