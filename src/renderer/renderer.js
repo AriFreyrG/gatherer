@@ -21,6 +21,8 @@
     regroup: $('regroup-btn'), regroupStatus: $('regroup-status'),
     settings: $('settings'), setForm: $('settings-form'), keyInput: $('key-input'),
     keyCurrent: $('key-current'), keyRemove: $('key-remove'), autoSum: $('auto-summarize'), setMsg: $('settings-msg'),
+    redditId: $('reddit-id'), redditSecret: $('reddit-secret'), redditCurrent: $('reddit-current'),
+    redditRemove: $('reddit-remove'), redditMsg: $('reddit-msg'),
     searchCount: $('search-count'), scroller: $('scroller'),
     archBtn: $('archive-btn'), archSize: $('archive-size'),
     archView: $('archive-view'), archFrame: $('archive-frame'), archLabel: $('archive-label'), archClose: $('archive-close'),
@@ -32,7 +34,7 @@
   let timer = null;
   let saving = Promise.resolve();
   let savedRange = null;
-  let settings = { hasKey: false, keySource: '', keyHint: '', autoSummarize: true };
+  let settings = { hasKey: false, keySource: '', keyHint: '', autoSummarize: true, reddit: { hasKey: false, source: '', hint: '' } };
   const aiBusy = new Set(); // note ids whose AI summary is being written
   const aiErrors = new Map(); // id -> last error message
   const cleanErr = (e) => String((e && e.message) || e).replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
@@ -779,9 +781,15 @@
     el.keyRemove.hidden = settings.keySource !== 'settings';
     el.autoSum.checked = settings.autoSummarize !== false;
     el.autoSum.disabled = !settings.hasKey;
+    const r = settings.reddit || {};
+    el.redditCurrent.textContent = r.hasKey
+      ? (r.source === 'environment' ? `Using the key from REDDIT_CLIENT_ID (${r.hint}).` : `A Reddit key is saved (${r.hint}).`)
+      : 'No Reddit key saved. Reddit posts can\'t be gathered yet.';
+    el.redditRemove.hidden = r.source !== 'settings';
   }
+  function setRedditMsg(text, isErr) { el.redditMsg.textContent = text; el.redditMsg.hidden = !text; el.redditMsg.classList.toggle('error', !!isErr); }
   function setMsg(text, isErr) { el.setMsg.textContent = text; el.setMsg.hidden = !text; el.setMsg.classList.toggle('error', !!isErr); }
-  function openSettings() { setMsg(''); el.keyInput.value = ''; applySettings(); el.settings.hidden = false; el.keyInput.focus(); }
+  function openSettings() { setMsg(''); setRedditMsg(''); el.keyInput.value = ''; el.redditId.value = ''; el.redditSecret.value = ''; applySettings(); el.settings.hidden = false; el.keyInput.focus(); }
   function closeSettings() { el.settings.hidden = true; }
   $('settings-btn').addEventListener('click', openSettings);
   $('settings-close').addEventListener('click', closeSettings);
@@ -799,6 +807,26 @@
   el.keyRemove.addEventListener('click', async () => {
     try { applySettings(await api.settings.setKey('')); setMsg('Key removed. Gatherer is back to local summaries.'); }
     catch (err) { setMsg(cleanErr(err), true); }
+  });
+  $('reddit-apps-link').addEventListener('click', (e) => { e.preventDefault(); api.openExternal(e.currentTarget.href); });
+  async function saveReddit() {
+    const clientId = el.redditId.value.trim();
+    if (!clientId) { setRedditMsg('Paste the client ID first.', true); return; }
+    setRedditMsg('Checking the key…');
+    try {
+      applySettings(await api.settings.setReddit({ clientId, secret: el.redditSecret.value.trim() }));
+      el.redditId.value = ''; el.redditSecret.value = '';
+      setRedditMsg('Saved. Reddit posts can now be gathered.');
+    } catch (err) { setRedditMsg(cleanErr(err), true); }
+  }
+  $('reddit-save').addEventListener('click', saveReddit);
+  // These fields sit inside the AI key's form, so Enter here saves the Reddit key instead.
+  for (const input of [el.redditId, el.redditSecret]) {
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveReddit(); } });
+  }
+  el.redditRemove.addEventListener('click', async () => {
+    try { applySettings(await api.settings.setReddit({ clientId: '' })); setRedditMsg('Reddit key removed.'); }
+    catch (err) { setRedditMsg(cleanErr(err), true); }
   });
   el.autoSum.addEventListener('change', async () => {
     try { applySettings(await api.settings.setAutoSummarize(el.autoSum.checked)); } catch (err) { setMsg(cleanErr(err), true); }

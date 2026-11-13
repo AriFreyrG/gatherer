@@ -1,6 +1,6 @@
 // App settings in <userData>/settings.json. The Anthropic API key is encrypted with Electron's
 // safeStorage (the macOS Keychain, DPAPI on Windows, libsecret on Linux) and never sent to the
-// renderer. ANTHROPIC_API_KEY in the environment is honoured as a fallback for development.
+// renderer. The Reddit app secret is kept the same way. ANTHROPIC_API_KEY in the environment is honoured as a fallback for development.
 const fs = require('fs');
 const path = require('path');
 
@@ -28,12 +28,44 @@ function write(data) {
   fs.renameSync(tmp, getFile());
 }
 
-function storedKey() {
-  const s = read();
-  if (s.apiKeyEnc) {
-    try { return getCrypto().decryptString(Buffer.from(s.apiKeyEnc, 'base64')); } catch { return ''; }
+function decrypt(enc, plain) {
+  if (enc) {
+    try { return getCrypto().decryptString(Buffer.from(enc, 'base64')); } catch { return ''; }
   }
-  return s.apiKeyPlain || '';
+  return plain || '';
+}
+function encryptInto(s, field, value) {
+  delete s[field + 'Enc']; delete s[field + 'Plain'];
+  if (!value) return;
+  const c = getCrypto();
+  if (c && c.isEncryptionAvailable()) s[field + 'Enc'] = c.encryptString(value).toString('base64');
+  else s[field + 'Plain'] = value; // no OS keychain available (rare on Linux); file stays in userData
+}
+
+function storedKey() { const s = read(); return decrypt(s.apiKeyEnc, s.apiKeyPlain); }
+
+// The Reddit app key for reading posts through Reddit's API, or null. The secret is empty for
+// an "installed app" key. REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are a development fallback.
+function storedReddit() {
+  const s = read();
+  if (!s.redditClientId) return null;
+  return { clientId: s.redditClientId, secret: decrypt(s.redditSecretEnc, s.redditSecretPlain) };
+}
+function redditCreds() {
+  const own = storedReddit();
+  if (own) return own;
+  const id = String(process.env.REDDIT_CLIENT_ID || '').trim();
+  return id ? { clientId: id, secret: String(process.env.REDDIT_CLIENT_SECRET || '').trim() } : null;
+}
+
+function setReddit({ clientId, secret } = {}) {
+  const id = String(clientId || '').trim();
+  const s = read();
+  delete s.redditClientId;
+  encryptInto(s, 'redditSecret', '');
+  if (id) { s.redditClientId = id; encryptInto(s, 'redditSecret', String(secret || '').trim()); }
+  write(s);
+  return publicSettings();
 }
 
 // The key to use, or '' when AI features are off.
@@ -49,22 +81,22 @@ function publicSettings() {
     keySource: own ? 'settings' : env ? 'environment' : '',
     keyHint: shown ? `…${shown.slice(-4)}` : '',
     autoSummarize: read().autoSummarize !== false,
+    reddit: (() => {
+      const own = storedReddit();
+      const r = own || redditCreds();
+      return { hasKey: !!r, source: own ? 'settings' : r ? 'environment' : '', hint: r ? `…${r.clientId.slice(-4)}` : '' };
+    })(),
   };
 }
 
 function setApiKey(key) {
   const k = String(key || '').trim();
   const s = read();
-  delete s.apiKeyEnc; delete s.apiKeyPlain;
-  if (k) {
-    const c = getCrypto();
-    if (c && c.isEncryptionAvailable()) s.apiKeyEnc = c.encryptString(k).toString('base64');
-    else s.apiKeyPlain = k; // no OS keychain available (rare on Linux); file stays in userData
-  }
+  encryptInto(s, 'apiKey', k);
   write(s);
   return publicSettings();
 }
 
 function setAutoSummarize(on) { const s = read(); s.autoSummarize = !!on; write(s); return publicSettings(); }
 
-module.exports = { setup, apiKey, publicSettings, setApiKey, setAutoSummarize };
+module.exports = { setup, apiKey, publicSettings, setApiKey, setAutoSummarize, redditCreds, setReddit };

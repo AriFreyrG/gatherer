@@ -93,7 +93,7 @@ test('settings encrypt the key and never expose it', () => {
   try {
     assert.strictEqual(settings.publicSettings().hasKey, false);
     const pub = settings.setApiKey(' sk-ant-secret1234 ');
-    assert.deepStrictEqual(pub, { hasKey: true, keySource: 'settings', keyHint: '…1234', autoSummarize: true });
+    assert.deepStrictEqual(pub, { hasKey: true, keySource: 'settings', keyHint: '…1234', autoSummarize: true, reddit: { hasKey: false, source: '', hint: '' } });
     assert.ok(!fs.readFileSync(file, 'utf8').includes('sk-ant-secret1234'));
     assert.strictEqual(settings.apiKey(), 'sk-ant-secret1234');
     settings.setApiKey('');

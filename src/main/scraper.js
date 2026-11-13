@@ -263,4 +263,4 @@ async function scrape(input) {
   }
 }
 
-module.exports = { scrape, sanitize, normalizeUrl, fetchHtml, extract };
+module.exports = { scrape, sanitize, normalizeUrl, fetchHtml, extract, UA };

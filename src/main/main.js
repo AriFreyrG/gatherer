@@ -3,7 +3,10 @@ const { pathToFileURL } = require('url');
 const path = require('path');
 const fs = require('fs');
 const storage = require('./storage');
-const { scrape, normalizeUrl, fetchHtml } = require('./scraper');
+const { normalizeUrl } = require('./scraper');
+const { gather } = require('./gather');
+const { renderPage } = require('./render');
+const reddit = require('./reddit');
 const images = require('./images');
 const exporter = require('./export');
 const syncService = require('./sync-service');
@@ -251,12 +254,13 @@ app.whenReady().then(() => {
       console.log(`[archive] saved ${id}: ${snap.resources} resources, ${Math.round(snap.html.length / 1024)} KB`);
     } catch (e) { console.warn('[archive] could not save offline copy:', e.message); }
   };
+  const gatherPage = (url) => gather(url, { redditCreds: settings.redditCreds, render: renderPage });
   handle('notes:list', () => storage.list());
   handle('notes:get', (id) => storage.get(id));
   handle('notes:search', (query) => storage.search(typeof query === 'string' ? query : ''));
   handle('notes:create', async (url) => {
     const normalized = normalizeUrl(url);
-    const { title, content, siteName, tags, html, finalUrl } = await scrape(normalized);
+    const { title, content, siteName, tags, html, finalUrl } = await gatherPage(normalized);
     const note = storage.create({ title, url: normalized, dateGathered: new Date().toISOString(), content, siteName, tags });
     await Promise.all([
       images.localize(note.content, { id: note.id, dir: storage.assetDir(note.id), referer: normalized })
@@ -272,7 +276,8 @@ app.whenReady().then(() => {
   handle('notes:archive', async (id) => {
     const note = storage.get(id);
     if (!note.url) throw new Error('This note has no source page to save');
-    const { html, finalUrl } = await fetchHtml(normalizeUrl(note.url));
+    // The same reader as a new note, so script-built pages and Reddit posts get a real copy.
+    const { html, finalUrl } = await gatherPage(normalizeUrl(note.url));
     const snap = await archive.snapshot(html, finalUrl);
     storage.saveArchive(id, snap.html);
     return storage.get(id);
@@ -334,6 +339,19 @@ app.whenReady().then(() => {
     return settings.setApiKey(k);
   });
   handle('settings:setAutoSummarize', (on) => settings.setAutoSummarize(on));
+  handle('settings:setReddit', async (creds) => {
+    const clientId = String((creds && creds.clientId) || '').trim();
+    const secret = String((creds && creds.secret) || '').trim();
+    if (clientId) {
+      try { await reddit.checkKey({ clientId, secret }); }
+      catch (e) {
+        // Only a definite rejection blocks saving; being offline right now should not.
+        if (e instanceof reddit.RedditAuthError) throw new Error('Reddit rejected that client ID and secret.');
+        console.warn('[reddit] could not verify key:', e && e.message);
+      }
+    }
+    return settings.setReddit({ clientId, secret });
+  });
 
   handle('ai:summarize', (id) => enrich(id));
   // Regroup every automatic note by meaning in one pass. Pinned notes keep their subject and
